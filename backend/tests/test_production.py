@@ -212,14 +212,14 @@ def test_operational_filters():
         "require_green_signal": True,
         "require_pinnacle": True
     }
-    }
     
     def should_bet(edge, signal, confidence, has_pinnacle):
+        """Edge is always positive now"""
         if not has_pinnacle:
             return False, "NO_PINNACLE_LINE"
         if confidence != "high":
             return False, "LOW_CONFIDENCE"
-        if abs(edge) < config["min_edge"]:
+        if edge < config["min_edge"]:  # No abs() needed - edge is always positive
             return False, "EDGE_TOO_SMALL"
         if signal != "green":
             return False, "NOT_GREEN_SIGNAL"
