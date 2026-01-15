@@ -179,6 +179,10 @@ class DebugPrediction(BaseModel):
     coeff_summary: Dict[str, float]
     contributions: Dict[str, float]
     pred_margin: float
+    market_spread: Optional[float] = None
+    edge_points: Optional[float] = None
+    recommended_side: Optional[str] = None
+    recommended_bet: Optional[str] = None
     confidence: str
     warnings: List[str]
 
