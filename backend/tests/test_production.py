@@ -292,7 +292,7 @@ def test_do_not_bet_reasons():
         "LOW_CONFIDENCE",
         "EDGE_TOO_SMALL",
         "NOT_GREEN_SIGNAL",
-        "SIGN_CONVENTION_ERROR"
+        "NO_EDGE"  # New reason for exact threshold match
     ]
     
     # All reasons should be strings
@@ -303,41 +303,55 @@ def test_do_not_bet_reasons():
 # ============= 5) SIGNAL THRESHOLDS =============
 
 def test_signal_thresholds():
-    """Test signal calculation"""
+    """Test signal calculation - edge is always positive now"""
     def calculate_signal(edge_points):
-        abs_edge = abs(edge_points)
-        if abs_edge >= 3.0:
+        """Edge is always positive"""
+        if edge_points >= 3.0:
             return "green"
-        elif abs_edge >= 2.0:
+        elif edge_points >= 2.0:
             return "yellow"
         return "red"
     
     assert calculate_signal(3.5) == "green"
-    assert calculate_signal(-3.5) == "green"
     assert calculate_signal(3.0) == "green"
     assert calculate_signal(2.5) == "yellow"
-    assert calculate_signal(-2.0) == "yellow"
+    assert calculate_signal(2.0) == "yellow"
     assert calculate_signal(1.5) == "red"
     assert calculate_signal(0) == "red"
 
-# ============= 6) EDGE CALCULATION =============
+# ============= 6) EDGE CALCULATION (CORRECTED) =============
 
 def test_edge_calculation():
-    """Test edge = pred_margin - market_spread"""
+    """
+    CORRECTED: Edge = distance from cover threshold
+    cover_threshold = -market_spread
+    edge = |pred_margin - cover_threshold| (always positive)
+    """
     def calc_edge(pred_margin, market_spread):
-        return pred_margin - market_spread
+        cover_threshold = -market_spread
+        if pred_margin > cover_threshold:
+            return pred_margin - cover_threshold
+        elif pred_margin < cover_threshold:
+            return cover_threshold - pred_margin
+        return 0.0
     
-    # HOME favored by model more than market
-    # pred=+3, spread=-5 → edge=+8 (HOME value)
-    assert calc_edge(3.0, -5.0) == 8.0
+    # spread=-5.0, pred=+8: threshold=5, HOME covers, edge=8-5=3
+    assert calc_edge(8.0, -5.0) == 3.0
     
-    # AWAY favored by model, market has HOME slight favorite
-    # pred=-2, spread=-1 → edge=-1 (AWAY value, small)
-    assert calc_edge(-2.0, -1.0) == -1.0
+    # spread=-5.0, pred=+2: threshold=5, AWAY covers, edge=5-2=3
+    assert calc_edge(2.0, -5.0) == 3.0
     
-    # Model agrees with market
-    # pred=-5, spread=-5 → edge=0
-    assert calc_edge(-5.0, -5.0) == 0.0
+    # spread=-5.0, pred=-3: threshold=5, AWAY covers, edge=5-(-3)=8
+    assert calc_edge(-3.0, -5.0) == 8.0
+    
+    # spread=+3.0, pred=+5: threshold=-3, HOME covers, edge=5-(-3)=8
+    assert calc_edge(5.0, 3.0) == 8.0
+    
+    # spread=0, pred=+2: threshold=0, HOME covers, edge=2
+    assert calc_edge(2.0, 0.0) == 2.0
+    
+    # Exact threshold: no edge
+    assert calc_edge(5.0, -5.0) == 0.0
 
 # ============= 7) METRICS TESTS =============
 
