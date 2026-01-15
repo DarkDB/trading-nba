@@ -1140,19 +1140,30 @@ async def generate_picks(
         pred_margin = float(model.predict(X_scaled)[0])
         
         market_spread = ref_line['spread_point_home']
-        edge_points = pred_margin - market_spread
-        signal = calculate_signal(edge_points)
         
-        # Determine side
-        if edge_points > 0:
+        # CORRECTED LOGIC: Validate model actually covers the spread
+        # HOME bet: model predicts result > spread (HOME beats the spread)
+        # AWAY bet: model predicts result < spread (AWAY beats the spread)
+        # Edge is ALWAYS positive and represents the advantage on the recommended side
+        
+        home_covers = pred_margin > market_spread
+        away_covers = pred_margin < market_spread
+        
+        if home_covers:
             recommended_side = "HOME"
+            edge_points = pred_margin - market_spread  # Always positive
             open_price = ref_line['price_home_decimal']
-        elif edge_points < 0:
+        elif away_covers:
             recommended_side = "AWAY"
+            edge_points = market_spread - pred_margin  # Always positive
             open_price = ref_line['price_away_decimal']
         else:
-            recommended_side = "HOME"  # Default for edge=0
+            # pred_margin == market_spread exactly - no edge, default to HOME
+            recommended_side = "HOME"
+            edge_points = 0.0
             open_price = ref_line['price_home_decimal']
+        
+        signal = calculate_signal(edge_points)
         
         recommended_bet_string = generate_recommended_bet_string(
             event['home_team'], event['away_team'], home_abbr, away_abbr,
