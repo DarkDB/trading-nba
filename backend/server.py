@@ -1187,7 +1187,7 @@ async def generate_picks(
         elif matchup_data['confidence'] != 'high':
             do_not_bet = True
             do_not_bet_reason = "LOW_CONFIDENCE"
-        elif abs(edge_points) < OPERATIONAL_CONFIG['operative_thresholds']['min_edge']:
+        elif edge_points < OPERATIONAL_CONFIG['operative_thresholds']['min_edge']:
             do_not_bet = True
             do_not_bet_reason = "EDGE_TOO_SMALL"
         elif signal != 'green':
