@@ -37,29 +37,52 @@
 Cada pick operativo muestra:
 
 ```
-Apuesta Recomendada: LAL -4.5
+Apuesta Recomendada: MEM +5.0
 
-pred_margin = +2.1    (modelo predice HOME gana por 2.1)
-market_spread = -4.5  (mercado tiene HOME -4.5)
-edge = +6.6           (pred_margin - market_spread)
+pred_margin = +0.75   (modelo predice HOME gana por 0.75)
+market_spread = -5.0  (mercado tiene HOME -5.0)
+cover_threshold = 5.0 (HOME debe ganar por MÁS de 5 para cubrir)
+edge = +4.25          (threshold - pred_margin, siempre positivo)
 ```
 
-### Convención de Signos
+### Convención de Cover (CORREGIDA v1.1)
 
-| Campo | Significado |
-|-------|-------------|
-| `market_spread = -4.5` | HOME es favorito por 4.5 puntos |
-| `market_spread = +3.0` | HOME es underdog por 3 puntos |
-| `pred_margin > 0` | Modelo predice victoria HOME |
-| `pred_margin < 0` | Modelo predice victoria AWAY |
-| `edge > 0` | Apostar HOME |
-| `edge < 0` | Apostar AWAY |
+La regla de cover determina qué lado apostar:
+
+| Escenario | Cover Threshold | HOME Cubre | AWAY Cubre |
+|-----------|-----------------|------------|------------|
+| `spread = -5.0` | `threshold = 5.0` | Si `pred_margin > 5` | Si `pred_margin < 5` |
+| `spread = +3.0` | `threshold = -3.0` | Si `pred_margin > -3` | Si `pred_margin < -3` |
+
+**Fórmula:**
+```
+cover_threshold = -market_spread
+HOME cubre si: pred_margin > cover_threshold
+AWAY cubre si: pred_margin < cover_threshold
+edge = |pred_margin - cover_threshold| (siempre positivo)
+```
+
+### Ejemplo Práctico
+
+```
+HOME: Orlando Magic (-5.0)
+AWAY: Memphis Grizzlies (+5.0)
+
+pred_margin = +0.75 (modelo dice ORL gana por 0.75)
+cover_threshold = -(-5.0) = 5.0 (ORL debe ganar por 5+ para cubrir)
+
+¿ORL cubre? 0.75 > 5.0? NO
+¿MEM cubre? 0.75 < 5.0? SÍ
+
+→ APOSTAR: MEM +5.0 (AWAY)
+→ edge = 5.0 - 0.75 = 4.25 puntos
+```
 
 ### Regla de Decisión
 
 ```
-SI edge > 0 → APOSTAR HOME (usar spread del HOME)
-SI edge < 0 → APOSTAR AWAY (usar spread opuesto)
+SI pred_margin > cover_threshold → APOSTAR HOME
+SI pred_margin < cover_threshold → APOSTAR AWAY
 ```
 
 ---
