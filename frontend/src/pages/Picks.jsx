@@ -209,6 +209,9 @@ export default function Picks() {
                     <th className="text-left text-xs font-semibold uppercase tracking-wider text-zinc-500 p-3">
                       Book
                     </th>
+                    <th className="text-center text-xs font-semibold uppercase tracking-wider text-zinc-500 p-3">
+                      Conf.
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
