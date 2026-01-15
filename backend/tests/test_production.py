@@ -191,22 +191,27 @@ def test_recommended_bet_string_sign():
             spread = -market_spread
         return f"{team} {spread:+.1f}"
     
-    # HOME favorite (negative spread)
+    # HOME favorite (negative spread), bet HOME
     assert generate_bet_string("LAL", "MEM", -4.5, "HOME") == "LAL -4.5"
+    # HOME favorite, bet AWAY (AWAY gets the points)
     assert generate_bet_string("LAL", "MEM", -4.5, "AWAY") == "MEM +4.5"
     
-    # HOME underdog (positive spread)
+    # HOME underdog (positive spread), bet HOME
     assert generate_bet_string("MEM", "LAL", +5.0, "HOME") == "MEM +5.0"
+    # HOME underdog, bet AWAY
     assert generate_bet_string("MEM", "LAL", +5.0, "AWAY") == "LAL -5.0"
 
+# ============= 3) OPERATIVE FILTERS TESTS =============
+
 def test_operational_filters():
-    """Test operative filter logic"""
+    """Test operative filter logic - edge is now always positive"""
     config = {
         "min_edge": 3.5,
         "max_picks_per_day": 2,
         "require_high_confidence": True,
         "require_green_signal": True,
         "require_pinnacle": True
+    }
     }
     
     def should_bet(edge, signal, confidence, has_pinnacle):
