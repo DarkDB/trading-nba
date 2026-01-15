@@ -308,10 +308,11 @@ def select_reference_line(lines: List[Dict], require_pinnacle: bool = True) -> O
     return best
 
 def calculate_signal(edge_points: float) -> str:
-    abs_edge = abs(edge_points)
-    if abs_edge >= OPERATIONAL_CONFIG["signal_thresholds"]["green"]:
+    """Calculate signal based on edge. Edge should always be positive."""
+    # Edge is now always positive (advantage on the recommended side)
+    if edge_points >= OPERATIONAL_CONFIG["signal_thresholds"]["green"]:
         return "green"
-    elif abs_edge >= OPERATIONAL_CONFIG["signal_thresholds"]["yellow"]:
+    elif edge_points >= OPERATIONAL_CONFIG["signal_thresholds"]["yellow"]:
         return "yellow"
     return "red"
 
