@@ -277,6 +277,13 @@ export default function Picks() {
                           {pick.confidence?.toUpperCase() || 'N/A'}
                         </Badge>
                       </td>
+                      <td className="p-3 text-center">
+                        {pick.do_not_bet ? (
+                          <span className="text-red-500 text-xs">{pick.do_not_bet_reason || 'NO'}</span>
+                        ) : (
+                          <span className="text-green-500 text-xs font-bold">BET</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
