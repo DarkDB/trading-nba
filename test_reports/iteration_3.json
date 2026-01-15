@@ -1,0 +1,94 @@
+{
+  "summary": "CRITICAL BUG FIX VERIFIED - Cover logic corrected. All 22 tests passed (13 unit + 9 API). Both bug cases (ORL vs MEM, SAS vs MIL) now return correct AWAY recommendations with positive edges. Frontend displays corrected picks correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "bug_fix_verification": {
+    "status": "VERIFIED - BUG FIXED",
+    "corrected_logic": {
+      "old_wrong": "pred_margin > market_spread → HOME (INCORRECT)",
+      "new_correct": "cover_threshold = -market_spread; HOME covers if pred_margin > cover_threshold; AWAY covers if pred_margin < cover_threshold; Edge always positive"
+    },
+    "bug_case_1_orl_vs_mem": {
+      "input": "pred_margin=+0.75, spread=-5.0",
+      "expected": "AWAY (MEM +5.0), edge=4.25",
+      "actual": "AWAY (MEM +5.0), edge=4.25",
+      "status": "PASS"
+    },
+    "bug_case_2_sas_vs_mil": {
+      "input": "pred_margin=-0.97, spread=-7.5",
+      "expected": "AWAY (MIL +7.5), edge=8.47",
+      "actual": "AWAY (MIL +7.5), edge=8.47",
+      "status": "PASS"
+    },
+    "all_edges_positive": "VERIFIED - All 9 picks have positive edges",
+    "recommended_side_consistent": "VERIFIED - All picks consistent with cover logic",
+    "bet_string_matches_side": "VERIFIED - All bet strings match recommended side"
+  },
+  "test_results": {
+    "unit_tests_production": "13/13 passed",
+    "api_tests_cover_logic": "9/9 passed",
+    "total": "22/22 passed (100%)"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_production.py",
+    "/app/tests/test_cover_logic_bugfix.py",
+    "/app/test_reports/pytest/cover_logic_bugfix_results.xml"
+  ],
+  "verified_picks_from_api": [
+    {
+      "matchup": "Orlando Magic vs Memphis Grizzlies",
+      "pred_margin": 0.75,
+      "open_spread": -5.0,
+      "recommended_side": "AWAY",
+      "recommended_bet_string": "MEM +5.0",
+      "edge_points": 4.25,
+      "signal": "green",
+      "confidence": "high"
+    },
+    {
+      "matchup": "San Antonio Spurs vs Milwaukee Bucks",
+      "pred_margin": -0.97,
+      "open_spread": -7.5,
+      "recommended_side": "AWAY",
+      "recommended_bet_string": "MIL +7.5",
+      "edge_points": 8.47,
+      "signal": "green",
+      "confidence": "high"
+    }
+  ],
+  "operative_filters_verified": {
+    "green_signal_only": "PASS",
+    "edge_gte_3.5": "PASS",
+    "high_confidence": "PASS",
+    "pinnacle_required": "PASS",
+    "max_2_per_day": "PASS"
+  },
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Cover logic fix is correct and follows standard betting convention",
+    "Edge is now always positive (distance from cover threshold)",
+    "Both /api/picks/generate and /api/admin/debug/predict use corrected logic"
+  ],
+  "updated_files": [
+    "/app/tests/test_cover_logic_bugfix.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "test_credentials": {
+    "email": "test_liveops@nbaedge.com",
+    "password": "TestPassword123!"
+  },
+  "seed_data_creation": "None - used existing test user",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "CRITICAL BUG FIX VERIFIED. Cover logic now uses cover_threshold = -market_spread. HOME covers if pred_margin > threshold, AWAY covers if pred_margin < threshold. Edge is always positive. Both bug cases (ORL vs MEM, SAS vs MIL) now return correct AWAY recommendations. All 22 tests pass. System is PRODUCTION READY."
+}
