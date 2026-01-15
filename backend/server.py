@@ -42,6 +42,51 @@ logger = logging.getLogger(__name__)
 
 security = HTTPBearer()
 
+# ============= TEAM MAPPING =============
+# Maps full team names (The Odds API) to abbreviations (nba_api)
+TEAM_NAME_TO_ABBR = {
+    "Atlanta Hawks": "ATL",
+    "Boston Celtics": "BOS",
+    "Brooklyn Nets": "BKN",
+    "Charlotte Hornets": "CHA",
+    "Chicago Bulls": "CHI",
+    "Cleveland Cavaliers": "CLE",
+    "Dallas Mavericks": "DAL",
+    "Denver Nuggets": "DEN",
+    "Detroit Pistons": "DET",
+    "Golden State Warriors": "GSW",
+    "Houston Rockets": "HOU",
+    "Indiana Pacers": "IND",
+    "Los Angeles Clippers": "LAC",
+    "Los Angeles Lakers": "LAL",
+    "Memphis Grizzlies": "MEM",
+    "Miami Heat": "MIA",
+    "Milwaukee Bucks": "MIL",
+    "Minnesota Timberwolves": "MIN",
+    "New Orleans Pelicans": "NOP",
+    "New York Knicks": "NYK",
+    "Oklahoma City Thunder": "OKC",
+    "Orlando Magic": "ORL",
+    "Philadelphia 76ers": "PHI",
+    "Phoenix Suns": "PHX",
+    "Portland Trail Blazers": "POR",
+    "Sacramento Kings": "SAC",
+    "San Antonio Spurs": "SAS",
+    "Toronto Raptors": "TOR",
+    "Utah Jazz": "UTA",
+    "Washington Wizards": "WAS",
+}
+
+ABBR_TO_TEAM_NAME = {v: k for k, v in TEAM_NAME_TO_ABBR.items()}
+
+def get_team_abbr(full_name: str) -> Optional[str]:
+    """Convert full team name to abbreviation"""
+    return TEAM_NAME_TO_ABBR.get(full_name)
+
+def get_team_full_name(abbr: str) -> Optional[str]:
+    """Convert abbreviation to full team name"""
+    return ABBR_TO_TEAM_NAME.get(abbr)
+
 # ============= PYDANTIC MODELS =============
 
 class UserCreate(BaseModel):
@@ -118,6 +163,24 @@ class SyncStatus(BaseModel):
     status: str
     message: str
     details: Optional[Dict[str, Any]] = None
+
+class DebugPrediction(BaseModel):
+    event_id: str
+    home_team: str
+    away_team: str
+    home_abbr: Optional[str]
+    away_abbr: Optional[str]
+    home_games_found: int
+    away_games_found: int
+    features_raw: Dict[str, float]
+    features_scaled: List[float]
+    model_id: str
+    intercept: float
+    coeff_summary: Dict[str, float]
+    contributions: Dict[str, float]
+    pred_margin: float
+    confidence: str
+    warnings: List[str]
 
 # ============= AUTH HELPERS =============
 
@@ -287,6 +350,174 @@ def calculate_signal(edge_points: float) -> str:
     else:
         return "red"
 
+# ============= FEATURE CALCULATION FOR UPCOMING GAMES =============
+
+async def get_team_rolling_stats(team_abbr: str, before_date: str = None, n: int = 15) -> Optional[Dict]:
+    """
+    Calculate rolling stats for a team based on their last N games.
+    Returns None if not enough historical data.
+    """
+    if not team_abbr:
+        return None
+    
+    # Get team's games (where they played as home or away)
+    query = {
+        "$or": [
+            {"home_team": team_abbr},
+            {"away_team": team_abbr}
+        ]
+    }
+    
+    games = await db.games.find(query).sort("game_date", -1).to_list(n * 2)
+    
+    if len(games) < 5:  # Minimum games required
+        logger.warning(f"Team {team_abbr}: only {len(games)} games found, need at least 5")
+        return None
+    
+    # Take last N games
+    recent_games = games[:n]
+    
+    # Get stats for these games
+    game_ids = [g['game_id'] for g in recent_games]
+    stats = await db.team_game_stats.find({
+        "game_id": {"$in": game_ids},
+        "team_abbr": team_abbr
+    }).to_list(n)
+    
+    if len(stats) < 5:
+        logger.warning(f"Team {team_abbr}: only {len(stats)} stat records found")
+        return None
+    
+    # Calculate aggregated stats
+    total_pts = sum(s.get('pts', 0) for s in stats)
+    total_fga = sum(s.get('fga', 0) for s in stats)
+    total_fgm = sum(s.get('fgm', 0) for s in stats)
+    total_fg3m = sum(s.get('fg3m', 0) for s in stats)
+    total_fta = sum(s.get('fta', 0) for s in stats)
+    total_ftm = sum(s.get('ftm', 0) for s in stats)
+    total_oreb = sum(s.get('oreb', 0) for s in stats)
+    total_dreb = sum(s.get('dreb', 0) for s in stats)
+    total_tov = sum(s.get('tov', 0) for s in stats)
+    num_games = len(stats)
+    
+    # Possessions estimate
+    poss = total_fga - total_oreb + total_tov + 0.4 * total_fta
+    if poss <= 0:
+        poss = num_games * 100  # Fallback
+    
+    # Offensive rating (points per 100 possessions)
+    ortg = (total_pts / poss * 100) if poss > 0 else 100
+    
+    # For defensive rating, we need opponent stats - use league average approximation
+    # In a full implementation, you'd calculate this from opponent data
+    drtg = 112  # League average approximation
+    
+    # eFG% (effective field goal percentage)
+    efg = ((total_fgm + 0.5 * total_fg3m) / total_fga * 100) if total_fga > 0 else 50
+    
+    # TOV% (turnover percentage)
+    tov_pct = (total_tov / poss * 100) if poss > 0 else 15
+    
+    # ORB% approximation
+    orb_pct = (total_oreb / (total_oreb + num_games * 35)) * 100 if num_games > 0 else 25
+    
+    # Free throw rate
+    ftr = (total_fta / total_fga) if total_fga > 0 else 0.25
+    
+    # Pace (possessions per game)
+    pace = (poss / num_games) * 2 if num_games > 0 else 100
+    
+    # Calculate rest days from most recent game
+    if recent_games:
+        last_game_date = recent_games[0].get('game_date', '')
+        try:
+            last_date = datetime.strptime(last_game_date, "%Y-%m-%d")
+            today = datetime.now()
+            rest_days = (today - last_date).days
+        except:
+            rest_days = 3
+    else:
+        rest_days = 3
+    
+    return {
+        "net_rating": ortg - drtg,
+        "pace": pace,
+        "efg": efg,
+        "tov_pct": tov_pct,
+        "orb_pct": orb_pct,
+        "ftr": ftr,
+        "rest_days": rest_days,
+        "is_b2b": 1 if rest_days == 1 else 0,
+        "games_used": num_games,
+        "stats_found": len(stats)
+    }
+
+async def calculate_matchup_features(home_team: str, away_team: str) -> Dict:
+    """
+    Calculate features for a matchup between two teams.
+    Returns feature dict with confidence level and warnings.
+    """
+    warnings = []
+    
+    # Convert team names to abbreviations
+    home_abbr = get_team_abbr(home_team)
+    away_abbr = get_team_abbr(away_team)
+    
+    if not home_abbr:
+        warnings.append(f"Unknown home team: {home_team}")
+    if not away_abbr:
+        warnings.append(f"Unknown away team: {away_team}")
+    
+    # Get rolling stats for each team
+    home_stats = await get_team_rolling_stats(home_abbr) if home_abbr else None
+    away_stats = await get_team_rolling_stats(away_abbr) if away_abbr else None
+    
+    # Determine confidence level
+    confidence = "high"
+    if not home_stats or not away_stats:
+        confidence = "low"
+        warnings.append("Missing team stats - using league averages")
+    elif (home_stats.get('games_used', 0) < 10 or away_stats.get('games_used', 0) < 10):
+        confidence = "medium"
+        warnings.append(f"Limited data: home={home_stats.get('games_used', 0)}, away={away_stats.get('games_used', 0)} games")
+    
+    # Default league average stats
+    default_stats = {
+        "net_rating": 0,
+        "pace": 100,
+        "efg": 52,
+        "tov_pct": 13,
+        "orb_pct": 25,
+        "ftr": 0.25,
+        "rest_days": 2,
+        "is_b2b": 0
+    }
+    
+    home_stats = home_stats or default_stats
+    away_stats = away_stats or default_stats
+    
+    # Calculate difference features (home - away)
+    features = {
+        "diff_net_rating": home_stats['net_rating'] - away_stats['net_rating'],
+        "diff_pace": home_stats['pace'] - away_stats['pace'],
+        "diff_efg": home_stats['efg'] - away_stats['efg'],
+        "diff_tov_pct": home_stats['tov_pct'] - away_stats['tov_pct'],
+        "diff_orb_pct": home_stats['orb_pct'] - away_stats['orb_pct'],
+        "diff_ftr": home_stats['ftr'] - away_stats['ftr'],
+        "diff_rest": home_stats['rest_days'] - away_stats['rest_days'],
+        "home_advantage": 1
+    }
+    
+    return {
+        "features": features,
+        "home_stats": home_stats,
+        "away_stats": away_stats,
+        "home_abbr": home_abbr,
+        "away_abbr": away_abbr,
+        "confidence": confidence,
+        "warnings": warnings
+    }
+
 # ============= NBA DATA SERVICE (nba_api) =============
 
 def get_nba_seasons():
@@ -295,20 +526,15 @@ def get_nba_seasons():
 
 async def sync_historical_data_task():
     """Sync historical NBA data - runs in background"""
-    from nba_api.stats.endpoints import leaguegamefinder, boxscoretraditionalv2
-    from nba_api.stats.static import teams as nba_teams
+    from nba_api.stats.endpoints import leaguegamefinder
     import time
     
     seasons = get_nba_seasons()
-    all_teams = nba_teams.get_teams()
-    team_ids = {t['id']: t['abbreviation'] for t in all_teams}
-    
     total_games = 0
     
     for season in seasons:
         logger.info(f"Syncing season {season}...")
         try:
-            # Get all games for season
             await asyncio.sleep(1)  # Rate limiting
             gamefinder = leaguegamefinder.LeagueGameFinder(
                 season_nullable=season,
@@ -320,7 +546,7 @@ async def sync_historical_data_task():
             # Process unique games
             game_ids = games_df['GAME_ID'].unique()
             
-            for game_id in game_ids[:100]:  # Limit for MVP
+            for game_id in game_ids[:200]:  # Process more games
                 existing = await db.games.find_one({"game_id": game_id})
                 if existing:
                     continue
@@ -330,8 +556,14 @@ async def sync_historical_data_task():
                     continue
                 
                 # Determine home/away
-                home_row = game_rows[game_rows['MATCHUP'].str.contains('vs.')].iloc[0] if len(game_rows[game_rows['MATCHUP'].str.contains('vs.')]) > 0 else game_rows.iloc[0]
-                away_row = game_rows[game_rows['MATCHUP'].str.contains('@')].iloc[0] if len(game_rows[game_rows['MATCHUP'].str.contains('@')]) > 0 else game_rows.iloc[1]
+                home_rows = game_rows[game_rows['MATCHUP'].str.contains('vs.')]
+                away_rows = game_rows[game_rows['MATCHUP'].str.contains('@')]
+                
+                if len(home_rows) == 0 or len(away_rows) == 0:
+                    continue
+                    
+                home_row = home_rows.iloc[0]
+                away_row = away_rows.iloc[0]
                 
                 game_doc = {
                     "game_id": game_id,
@@ -402,31 +634,31 @@ async def build_features_task():
     
     games = await db.games.find({}).sort("game_date", 1).to_list(10000)
     
-    # Group stats by team and date
+    # Group games by team
     team_games = {}
     for game in games:
-        for team_key, team_id in [("home", game['home_team_id']), ("away", game['away_team_id'])]:
-            if team_id not in team_games:
-                team_games[team_id] = []
-            team_games[team_id].append(game)
+        for team_abbr in [game['home_team'], game['away_team']]:
+            if team_abbr not in team_games:
+                team_games[team_abbr] = []
+            team_games[team_abbr].append(game)
     
     features_count = 0
     
     for game in games:
         game_date = game['game_date']
-        home_id = game['home_team_id']
-        away_id = game['away_team_id']
+        home_abbr = game['home_team']
+        away_abbr = game['away_team']
         
-        # Get last N games for each team BEFORE this game
-        home_prev = [g for g in team_games.get(home_id, []) if g['game_date'] < game_date][-N:]
-        away_prev = [g for g in team_games.get(away_id, []) if g['game_date'] < game_date][-N:]
+        # Get last N games for each team BEFORE this game (anti-leakage)
+        home_prev = [g for g in team_games.get(home_abbr, []) if g['game_date'] < game_date][-N:]
+        away_prev = [g for g in team_games.get(away_abbr, []) if g['game_date'] < game_date][-N:]
         
         if len(home_prev) < 5 or len(away_prev) < 5:
             continue  # Not enough history
         
         # Calculate rolling stats for home team
-        home_stats = await calculate_team_rolling_stats(home_id, home_prev)
-        away_stats = await calculate_team_rolling_stats(away_id, away_prev)
+        home_stats = await calculate_team_stats_from_games(home_abbr, home_prev)
+        away_stats = await calculate_team_stats_from_games(away_abbr, away_prev)
         
         if not home_stats or not away_stats:
             continue
@@ -439,8 +671,8 @@ async def build_features_task():
             "game_id": game['game_id'],
             "season": game['season'],
             "game_date": game_date,
-            "home_team_id": home_id,
-            "away_team_id": away_id,
+            "home_team": home_abbr,
+            "away_team": away_abbr,
             # Home features
             "home_net_rating": home_stats['net_rating'],
             "home_pace": home_stats['pace'],
@@ -482,8 +714,8 @@ async def build_features_task():
     logger.info(f"Built features for {features_count} games")
     return features_count
 
-async def calculate_team_rolling_stats(team_id: int, prev_games: List[Dict]) -> Optional[Dict]:
-    """Calculate rolling advanced stats for a team"""
+async def calculate_team_stats_from_games(team_abbr: str, prev_games: List[Dict]) -> Optional[Dict]:
+    """Calculate rolling advanced stats for a team from previous games"""
     if not prev_games:
         return None
     
@@ -491,7 +723,7 @@ async def calculate_team_rolling_stats(team_id: int, prev_games: List[Dict]) -> 
     game_ids = [g['game_id'] for g in prev_games]
     stats = await db.team_game_stats.find({
         "game_id": {"$in": game_ids},
-        "team_id": team_id
+        "team_abbr": team_abbr
     }).to_list(100)
     
     if len(stats) < 5:
@@ -503,34 +735,22 @@ async def calculate_team_rolling_stats(team_id: int, prev_games: List[Dict]) -> 
     total_fgm = sum(s['fgm'] for s in stats)
     total_fg3m = sum(s['fg3m'] for s in stats)
     total_fta = sum(s['fta'] for s in stats)
-    total_ftm = sum(s['ftm'] for s in stats)
     total_oreb = sum(s['oreb'] for s in stats)
-    total_dreb = sum(s['dreb'] for s in stats)
     total_tov = sum(s['tov'] for s in stats)
     n = len(stats)
     
-    # Offensive rating estimate (simplified)
+    # Possessions estimate
     poss = total_fga - total_oreb + total_tov + 0.4 * total_fta
+    if poss <= 0:
+        poss = n * 100
+    
     ortg = (total_pts / poss * 100) if poss > 0 else 100
-    
-    # Defensive rating estimate - need opponent stats
-    # For now, use league average approximation
-    drtg = 110  # League average approximation
-    
-    # eFG%
+    drtg = 112  # League average approximation
     efg = ((total_fgm + 0.5 * total_fg3m) / total_fga * 100) if total_fga > 0 else 50
-    
-    # TOV%
     tov_pct = (total_tov / poss * 100) if poss > 0 else 15
-    
-    # ORB%
-    orb_pct = (total_oreb / (total_oreb + (n * 35))) * 100  # Approximation
-    
-    # FTr
-    ftr = (total_fta / total_fga) if total_fga > 0 else 0.3
-    
-    # Pace estimate
-    pace = poss / n * 2  # Per game possessions
+    orb_pct = (total_oreb / (total_oreb + n * 35)) * 100
+    ftr = (total_fta / total_fga) if total_fga > 0 else 0.25
+    pace = (poss / n) * 2 if n > 0 else 100
     
     return {
         "net_rating": ortg - drtg,
@@ -544,7 +764,7 @@ async def calculate_team_rolling_stats(team_id: int, prev_games: List[Dict]) -> 
 def calculate_rest_days(game_date: str, prev_games: List[Dict]) -> int:
     """Calculate days since last game"""
     if not prev_games:
-        return 3  # Default
+        return 3
     
     last_game = prev_games[-1]
     try:
@@ -585,12 +805,44 @@ async def train_model_task():
         "diff_orb_pct", "diff_ftr", "diff_rest", "home_advantage"
     ]
     
-    # Prepare data
-    X_train = np.array([[f.get(col, 0) for col in feature_cols] for f in train_features])
-    y_train = np.array([f['margin'] for f in train_features])
+    # Prepare data - check for NaNs
+    X_train = []
+    y_train = []
+    nan_count = 0
     
-    X_test = np.array([[f.get(col, 0) for col in feature_cols] for f in test_features]) if test_features else np.array([])
-    y_test = np.array([f['margin'] for f in test_features]) if test_features else np.array([])
+    for f in train_features:
+        row = []
+        has_nan = False
+        for col in feature_cols:
+            val = f.get(col, 0)
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                has_nan = True
+                nan_count += 1
+                val = 0
+            row.append(val)
+        X_train.append(row)
+        y_train.append(f['margin'])
+    
+    X_train = np.array(X_train)
+    y_train = np.array(y_train)
+    
+    logger.info(f"Training data: {len(X_train)} samples, {nan_count} NaN values replaced")
+    
+    # Prepare test data
+    X_test = []
+    y_test = []
+    for f in test_features:
+        row = []
+        for col in feature_cols:
+            val = f.get(col, 0)
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                val = 0
+            row.append(val)
+        X_test.append(row)
+        y_test.append(f['margin'])
+    
+    X_test = np.array(X_test) if test_features else np.array([]).reshape(0, len(feature_cols))
+    y_test = np.array(y_test) if test_features else np.array([])
     
     # Scale features
     scaler = StandardScaler()
@@ -605,15 +857,22 @@ async def train_model_task():
     train_mae = mean_absolute_error(y_train, train_pred)
     train_rmse = np.sqrt(mean_squared_error(y_train, train_pred))
     
+    # Check prediction variance
+    train_pred_std = np.std(train_pred)
+    logger.info(f"Train predictions: min={np.min(train_pred):.2f}, max={np.max(train_pred):.2f}, std={train_pred_std:.2f}")
+    
     test_mae = 0
     test_rmse = 0
+    test_pred_std = 0
     if len(X_test) > 0:
         X_test_scaled = scaler.transform(X_test)
         test_pred = model.predict(X_test_scaled)
         test_mae = mean_absolute_error(y_test, test_pred)
         test_rmse = np.sqrt(mean_squared_error(y_test, test_pred))
+        test_pred_std = np.std(test_pred)
+        logger.info(f"Test predictions: min={np.min(test_pred):.2f}, max={np.max(test_pred):.2f}, std={test_pred_std:.2f}")
     
-    # Save model to database (as binary)
+    # Save model to database
     model_buffer = io.BytesIO()
     joblib.dump({"model": model, "scaler": scaler, "features": feature_cols}, model_buffer)
     model_bytes = model_buffer.getvalue()
@@ -633,7 +892,12 @@ async def train_model_task():
         "is_active": True,
         "model_binary": model_bytes,
         "train_samples": len(train_features),
-        "test_samples": len(test_features)
+        "test_samples": len(test_features),
+        "nan_values_replaced": nan_count,
+        "train_pred_std": float(train_pred_std),
+        "test_pred_std": float(test_pred_std) if test_pred_std else 0,
+        "intercept": float(model.intercept_),
+        "coefficients": {col: float(coef) for col, coef in zip(feature_cols, model.coef_)}
     }
     
     # Deactivate other models
@@ -649,7 +913,9 @@ async def train_model_task():
         "train_mae": train_mae,
         "train_rmse": train_rmse,
         "train_samples": len(train_features),
-        "test_samples": len(test_features)
+        "test_samples": len(test_features),
+        "train_pred_std": float(train_pred_std),
+        "test_pred_std": float(test_pred_std) if test_pred_std else 0
     }
 
 async def get_active_model():
@@ -662,16 +928,17 @@ async def get_active_model():
         return None
     
     model_data = joblib.load(io.BytesIO(model_doc['model_binary']))
+    model_data['model_id'] = model_doc['id']
+    model_data['intercept'] = model_doc.get('intercept', 0)
+    model_data['coefficients'] = model_doc.get('coefficients', {})
     return model_data
 
 # ============= CREATE APP =============
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     logger.info("Starting NBA Edge API...")
     yield
-    # Shutdown
     client.close()
     logger.info("Shutdown complete")
 
@@ -682,7 +949,6 @@ api_router = APIRouter(prefix="/api")
 
 @api_router.post("/auth/register", response_model=TokenResponse)
 async def register(user_data: UserCreate):
-    # Check if email exists
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -697,7 +963,6 @@ async def register(user_data: UserCreate):
     }
     
     await db.users.insert_one(user_doc)
-    
     token = create_token(user_id, user_data.email)
     
     return TokenResponse(
@@ -743,7 +1008,6 @@ async def get_me(user = Depends(get_current_user)):
 async def sync_historical(user = Depends(get_current_user)):
     """Sync historical NBA data (seasons 2021-25)"""
     try:
-        # Run in background
         asyncio.create_task(sync_historical_data_task())
         return SyncStatus(
             status="started",
@@ -801,6 +1065,8 @@ async def sync_upcoming(days: int = 2, user = Depends(get_current_user)):
                 "commence_time": event['commence_time'],
                 "home_team": event['home_team'],
                 "away_team": event['away_team'],
+                "home_team_abbr": get_team_abbr(event['home_team']),
+                "away_team_abbr": get_team_abbr(event['away_team']),
                 "status": "pending",
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
@@ -827,13 +1093,14 @@ async def sync_odds(days: int = 2, user = Depends(get_current_user)):
         lines_count = 0
         
         for event in events:
-            # First ensure event exists
             event_doc = {
                 "event_id": event['id'],
                 "sport_key": event.get('sport_key', 'basketball_nba'),
                 "commence_time": event['commence_time'],
                 "home_team": event['home_team'],
                 "away_team": event['away_team'],
+                "home_team_abbr": get_team_abbr(event['home_team']),
+                "away_team_abbr": get_team_abbr(event['away_team']),
                 "status": "pending",
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
@@ -843,13 +1110,11 @@ async def sync_odds(days: int = 2, user = Depends(get_current_user)):
                 upsert=True
             )
             
-            # Process bookmaker odds
             for bookmaker in event.get('bookmakers', []):
                 for market in bookmaker.get('markets', []):
                     if market.get('key') == 'spreads':
                         outcomes = market.get('outcomes', [])
                         if len(outcomes) >= 2:
-                            # Find home and away outcomes
                             home_outcome = next((o for o in outcomes if o['name'] == event['home_team']), outcomes[0])
                             away_outcome = next((o for o in outcomes if o['name'] == event['away_team']), outcomes[1])
                             
@@ -883,12 +1148,71 @@ async def sync_odds(days: int = 2, user = Depends(get_current_user)):
 @api_router.post("/admin/refresh-results", response_model=SyncStatus)
 async def refresh_results(user = Depends(get_current_user)):
     """Update predictions with actual results"""
-    # This would fetch completed game scores and update predictions
-    # For now, return placeholder
     return SyncStatus(
         status="completed",
         message="Results refresh not yet implemented",
         details={}
+    )
+
+# ============= DEBUG ENDPOINT =============
+
+@api_router.get("/admin/debug/predict", response_model=DebugPrediction)
+async def debug_predict(event_id: str, user = Depends(get_current_user)):
+    """Debug endpoint to see full prediction details for an event"""
+    import numpy as np
+    
+    # Get event
+    event = await db.upcoming_events.find_one({"event_id": event_id}, {"_id": 0})
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Load model
+    model_data = await get_active_model()
+    if not model_data:
+        raise HTTPException(status_code=400, detail="No trained model available")
+    
+    model = model_data['model']
+    scaler = model_data['scaler']
+    feature_cols = model_data['features']
+    
+    # Calculate features
+    matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
+    features = matchup_data['features']
+    
+    # Count games found
+    home_abbr = matchup_data['home_abbr']
+    away_abbr = matchup_data['away_abbr']
+    
+    home_games = await db.games.count_documents({"$or": [{"home_team": home_abbr}, {"away_team": home_abbr}]}) if home_abbr else 0
+    away_games = await db.games.count_documents({"$or": [{"home_team": away_abbr}, {"away_team": away_abbr}]}) if away_abbr else 0
+    
+    # Build feature vector
+    X = np.array([[features.get(col, 0) for col in feature_cols]])
+    X_scaled = scaler.transform(X)
+    pred_margin = float(model.predict(X_scaled)[0])
+    
+    # Calculate contributions
+    contributions = {"intercept": float(model.intercept_)}
+    for i, (col, coef) in enumerate(zip(feature_cols, model.coef_)):
+        contributions[col] = float(coef * X_scaled[0][i])
+    
+    return DebugPrediction(
+        event_id=event_id,
+        home_team=event['home_team'],
+        away_team=event['away_team'],
+        home_abbr=home_abbr,
+        away_abbr=away_abbr,
+        home_games_found=home_games,
+        away_games_found=away_games,
+        features_raw=features,
+        features_scaled=X_scaled[0].tolist(),
+        model_id=model_data['model_id'],
+        intercept=float(model.intercept_),
+        coeff_summary={col: float(coef) for col, coef in zip(feature_cols, model.coef_)},
+        contributions=contributions,
+        pred_margin=pred_margin,
+        confidence=matchup_data['confidence'],
+        warnings=matchup_data['warnings']
     )
 
 # ============= USER ROUTES =============
@@ -920,7 +1244,7 @@ async def get_upcoming(user = Depends(get_current_user)):
 
 @api_router.post("/picks/generate")
 async def generate_picks(user = Depends(get_current_user)):
-    """Generate picks using active model"""
+    """Generate picks using active model with REAL features"""
     import numpy as np
     
     # Load model
@@ -952,18 +1276,9 @@ async def generate_picks(user = Depends(get_current_user)):
         if not reference_line:
             continue
         
-        # For MVP: use simplified features (we don't have real-time team stats)
-        # In production, you'd fetch current team rolling stats
-        features = {
-            "diff_net_rating": 0,  # Would need current team data
-            "diff_pace": 0,
-            "diff_efg": 0,
-            "diff_tov_pct": 0,
-            "diff_orb_pct": 0,
-            "diff_ftr": 0,
-            "diff_rest": 0,
-            "home_advantage": 1
-        }
+        # Calculate REAL features for this matchup
+        matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
+        features = matchup_data['features']
         
         # Make prediction
         X = np.array([[features.get(col, 0) for col in feature_cols]])
@@ -986,6 +1301,9 @@ async def generate_picks(user = Depends(get_current_user)):
             "pred_margin": round(pred_margin, 2),
             "edge_points": round(edge_points, 2),
             "signal": signal,
+            "confidence": matchup_data['confidence'],
+            "warnings": matchup_data['warnings'],
+            "features_used": {k: round(v, 4) for k, v in features.items()},
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         
@@ -997,6 +1315,11 @@ async def generate_picks(user = Depends(get_current_user)):
         )
         
         picks.append(pick)
+    
+    # Log prediction variance for debugging
+    if picks:
+        pred_margins = [p['pred_margin'] for p in picks]
+        logger.info(f"Generated {len(picks)} picks. Pred margins: min={min(pred_margins):.2f}, max={max(pred_margins):.2f}, unique={len(set(pred_margins))}")
     
     return {"picks": picks, "count": len(picks)}
 
@@ -1029,7 +1352,6 @@ async def get_history(
         {"_id": 0}
     ).sort("created_at", -1).to_list(500)
     
-    # Calculate stats
     total = len(predictions)
     covered_count = sum(1 for p in predictions if p.get('covered'))
     
@@ -1039,7 +1361,6 @@ async def get_history(
         "hit_rate": (covered_count / total * 100) if total > 0 else 0
     }
     
-    # Group by signal
     by_signal = {}
     for p in predictions:
         s = p.get('signal', 'unknown')
@@ -1071,7 +1392,7 @@ async def export_history(user = Depends(get_current_user)):
     writer = csv.DictWriter(output, fieldnames=[
         "created_at", "home_team", "away_team", "commence_time",
         "pred_margin", "market_spread_used", "edge_points", "signal",
-        "actual_margin", "covered", "reference_bookmaker_used"
+        "actual_margin", "covered", "reference_bookmaker_used", "confidence"
     ])
     writer.writeheader()
     
@@ -1087,7 +1408,8 @@ async def export_history(user = Depends(get_current_user)):
             "signal": p.get('signal'),
             "actual_margin": p.get('actual_margin'),
             "covered": p.get('covered'),
-            "reference_bookmaker_used": p.get('reference_bookmaker_used')
+            "reference_bookmaker_used": p.get('reference_bookmaker_used'),
+            "confidence": p.get('confidence', 'unknown')
         })
     
     output.seek(0)
@@ -1105,16 +1427,20 @@ async def get_dataset_stats(user = Depends(get_current_user)):
     games_count = await db.games.count_documents({})
     features_count = await db.game_features.count_documents({})
     
-    # Count by season
     seasons = {}
     for season in get_nba_seasons():
         count = await db.games.count_documents({"season": season})
         seasons[season] = count
     
+    # Team coverage
+    teams = await db.games.distinct("home_team")
+    
     return {
         "total_games": games_count,
         "total_features": features_count,
-        "by_season": seasons
+        "by_season": seasons,
+        "teams_count": len(teams),
+        "teams": sorted(teams)
     }
 
 @api_router.get("/stats/model")
@@ -1129,7 +1455,7 @@ async def get_model_stats(user = Depends(get_current_user)):
 
 @api_router.get("/")
 async def root():
-    return {"message": "NBA Edge API", "version": "1.0.0"}
+    return {"message": "NBA Edge API", "version": "1.1.0"}
 
 @api_router.get("/health")
 async def health():
