@@ -212,6 +212,9 @@ export default function Picks() {
                     <th className="text-center text-xs font-semibold uppercase tracking-wider text-zinc-500 p-3">
                       Conf.
                     </th>
+                    <th className="text-center text-xs font-semibold uppercase tracking-wider text-zinc-500 p-3">
+                      Bet?
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
