@@ -1200,6 +1200,27 @@ async def debug_predict(event_id: str, user = Depends(get_current_user)):
     for i, (col, coef) in enumerate(zip(feature_cols, model.coef_)):
         contributions[col] = float(coef * X_scaled[0][i])
     
+    # Get market line and calculate edge
+    lines = await db.market_lines.find({"event_id": event_id}, {"_id": 0}).to_list(10)
+    ref_line = select_reference_line(lines)
+    
+    market_spread = None
+    edge_points = None
+    recommended_side = None
+    recommended_bet = None
+    
+    if ref_line:
+        market_spread = ref_line['spread_point_home']
+        edge_points = pred_margin - market_spread
+        
+        if edge_points > 0:
+            recommended_side = "HOME"
+            recommended_bet = f"{home_abbr or event['home_team'][:3].upper()} {market_spread:+.1f}"
+        else:
+            recommended_side = "AWAY"
+            away_spread = -market_spread
+            recommended_bet = f"{away_abbr or event['away_team'][:3].upper()} {away_spread:+.1f}"
+    
     return DebugPrediction(
         event_id=event_id,
         home_team=event['home_team'],
@@ -1215,6 +1236,10 @@ async def debug_predict(event_id: str, user = Depends(get_current_user)):
         coeff_summary={col: float(coef) for col, coef in zip(feature_cols, model.coef_)},
         contributions=contributions,
         pred_margin=pred_margin,
+        market_spread=market_spread,
+        edge_points=edge_points,
+        recommended_side=recommended_side,
+        recommended_bet=recommended_bet,
         confidence=matchup_data['confidence'],
         warnings=matchup_data['warnings']
     )
