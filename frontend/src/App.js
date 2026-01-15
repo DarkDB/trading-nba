@@ -29,6 +29,7 @@ function App() {
           {/* Protected routes */}
           <Route element={<DashboardLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/live-ops" element={<LiveOps />} />
             <Route path="/dataset" element={<Dataset />} />
             <Route path="/train" element={<Train />} />
             <Route path="/upcoming" element={<Upcoming />} />
