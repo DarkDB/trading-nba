@@ -263,6 +263,17 @@ export default function Picks() {
                       <td className="p-3 text-sm text-zinc-400">
                         {pick.reference_bookmaker_used}
                       </td>
+                      <td className="p-3 text-center">
+                        <Badge 
+                          className={`${
+                            pick.confidence === 'high' ? 'bg-green-500/10 text-green-400' :
+                            pick.confidence === 'medium' ? 'bg-yellow-500/10 text-yellow-400' :
+                            'bg-red-500/10 text-red-400'
+                          } border-0 text-xs`}
+                        >
+                          {pick.confidence?.toUpperCase() || 'N/A'}
+                        </Badge>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
