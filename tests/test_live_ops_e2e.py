@@ -144,11 +144,13 @@ class TestLiveOpsE2E:
         data = response.json()
         
         # Verify response structure
-        assert "picks" in data or "operative_picks" in data
-        assert "count" in data or "operative_count" in data
+        assert "picks" in data
+        assert "count" in data
         
-        operative_picks = data.get("operative_picks", [])
-        all_picks = data.get("picks", [])
+        # In operative mode, "picks" contains the filtered operative picks
+        # "all_picks" contains all analyzed picks
+        operative_picks = data.get("picks", [])
+        all_picks = data.get("all_picks", [])
         
         print(f"Total picks analyzed: {len(all_picks)}")
         print(f"Operative picks (filtered): {len(operative_picks)}")
