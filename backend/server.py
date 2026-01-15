@@ -1022,15 +1022,28 @@ async def debug_predict(event_id: str, user=Depends(get_current_user)):
         do_not_bet_reason = "NO_PINNACLE_LINE"
     else:
         market_spread = ref_line['spread_point_home']
-        edge_points = pred_margin - market_spread
         
-        if edge_points > 0:
+        # CORRECTED LOGIC: Validate model actually covers the spread
+        # HOME bet: model predicts HOME wins by MORE than the spread requires
+        #   - If spread=-5.0 (HOME favored), HOME covers if pred_margin > -5.0 (HOME wins by more than 5)
+        #   - Actually: HOME covers if pred_margin > spread (pred wins the spread)
+        # AWAY bet: model predicts HOME wins by LESS than the spread (or loses)
+        #   - AWAY covers if pred_margin < spread
+        
+        home_covers = pred_margin > market_spread  # Model says HOME beats the spread
+        away_covers = pred_margin < market_spread  # Model says AWAY beats the spread
+        
+        if home_covers:
             recommended_side = "HOME"
-        elif edge_points < 0:
+            edge_points = pred_margin - market_spread  # Always positive when HOME covers
+        elif away_covers:
             recommended_side = "AWAY"
+            edge_points = market_spread - pred_margin  # Always positive when AWAY covers
         else:
+            # pred_margin == market_spread exactly - no edge
             do_not_bet = True
-            do_not_bet_reason = "SIGN_CONVENTION_ERROR"
+            do_not_bet_reason = "NO_EDGE"
+            edge_points = 0.0
         
         if recommended_side:
             recommended_bet = generate_recommended_bet_string(
