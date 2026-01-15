@@ -4,6 +4,7 @@
 
 **Locked Date:** 15 Enero 2025  
 **Model Version:** v1.0 (20260115_123658)  
+**Cover Logic Version:** v1.1 (BUG FIX VERIFIED)
 **Operative Config:** LOCKED  
 
 > ⛔ NO realizar cambios de código ni modelo sin instrucción explícita del usuario.
@@ -33,39 +34,62 @@ Construir una web app full-stack llamada "NBA Edge" orientada a operar desde Esp
 
 ---
 
+## CRITICAL BUG FIX (15 Jan 2025)
+
+### ❌ Bug Detectado
+El sistema recomendaba apuestas que el modelo NO cubría:
+- ORL vs MEM: pred=+0.75, spread=-5.0 → Recomendaba ORL -5.0 (INCORRECTO)
+- SAS vs MIL: pred=-0.97, spread=-7.5 → Recomendaba SAS -7.5 (INCORRECTO)
+
+### ✅ Lógica Corregida (v1.1)
+```
+cover_threshold = -market_spread
+HOME cubre si: pred_margin > cover_threshold
+AWAY cubre si: pred_margin < cover_threshold
+edge = |pred_margin - cover_threshold| (siempre positivo)
+```
+
+### Verificación Bug Fix
+| Caso | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| ORL vs MEM | pred=+0.75, spread=-5.0 | AWAY (MEM +5.0), edge=4.25 | AWAY (MEM +5.0), edge=4.25 | ✅ PASS |
+| SAS vs MIL | pred=-0.97, spread=-7.5 | AWAY (MIL +7.5), edge=8.47 | AWAY (MIL +7.5), edge=8.47 | ✅ PASS |
+
+---
+
 ## PRODUCTION VERIFICATION CHECKLIST (15 Jan 2025)
+
+### ✅ Bug Fix Tests
+| Test | Status |
+|------|--------|
+| test_no_bet_when_model_does_not_cover | **PASS** |
+| test_edge_positive_and_consistent_with_side | **PASS** |
+| All edges positive | **PASS** (9/9 picks) |
+| Recommended side consistent with cover | **PASS** |
 
 ### ✅ Live Ops End-to-End Flow
 | Test | Status | Detalles |
 |------|--------|----------|
 | Sync Upcoming | **PASS** | 9 eventos NBA sincronizados |
-| Sync Odds (Pinnacle) | **PASS** | 27 líneas, 9/9 eventos con Pinnacle |
-| Generate Picks (operative) | **PASS** | 2 picks operativos generados |
+| Sync Odds (Pinnacle) | **PASS** | 27 líneas |
+| Generate Picks (operative) | **PASS** | 2 picks operativos |
 | Snapshot Close Lines | **PASS** | Endpoint funcionando |
 
 ### ✅ Filtros Operativos
-| Filtro | Status | Configuración |
-|--------|--------|---------------|
-| Signal GREEN only | **PASS** | ✓ |
-| Edge ≥ 3.5 | **PASS** | ✓ |
-| Confidence HIGH | **PASS** | ✓ |
-| Pinnacle required | **PASS** | ✓ |
-| Max 2 picks/día | **PASS** | ✓ |
-
-### ✅ Campos de Output
-| Campo | Status |
-|-------|--------|
-| recommended_bet_string | **PASS** - Formato correcto (ej: "LAL -4.5") |
-| explanation | **PASS** - Incluye pred_margin, edge, confidence, model_version |
-| CLV fields (History) | **PASS** - open_spread, close_spread, clv_spread |
+| Filtro | Status |
+|--------|--------|
+| Signal GREEN only | **PASS** |
+| Edge ≥ 3.5 (siempre positivo) | **PASS** |
+| Confidence HIGH | **PASS** |
+| Pinnacle required | **PASS** |
+| Max 2 picks/día | **PASS** |
 
 ### ✅ Tests Automatizados
 | Suite | Resultado |
 |-------|-----------|
-| Live Ops E2E | 11/11 passed |
-| Unit Tests Production | 11/11 passed |
-| Unit Tests Pipeline | 8/8 passed |
-| **TOTAL** | **30/30 (100%)** |
+| Unit Tests Production | 13/13 passed |
+| API Tests Cover Logic | 9/9 passed |
+| **TOTAL** | **22/22 (100%)** |
 
 ---
 
@@ -91,6 +115,7 @@ Construir una web app full-stack llamada "NBA Edge" orientada a operar desde Esp
 - ✅ Ridge Regression con versionado
 - ✅ CLV calculation
 - ✅ Filtros operativos
+- ✅ **COVER LOGIC FIX v1.1**
 
 ### Frontend
 - ✅ Dark mode professional dashboard
@@ -105,7 +130,7 @@ Construir una web app full-stack llamada "NBA Edge" orientada a operar desde Esp
 - ✅ CLV tracking (open/close line)
 - ✅ Filtros operativos configurables
 - ✅ do_not_bet rules con razones
-- ✅ RUNBOOK.md operativo
+- ✅ RUNBOOK.md operativo (actualizado v1.1)
 
 ---
 
@@ -125,20 +150,20 @@ Construir una web app full-stack llamada "NBA Edge" orientada a operar desde Esp
 ---
 
 ## Test Reports
-- `/app/test_reports/iteration_2.json` - Verificación final producción
-- `/app/test_reports/iteration_1.json` - Tests MVP inicial
-- `/app/tests/test_live_ops_e2e.py` - E2E tests
+- `/app/test_reports/iteration_3.json` - Verificación bug fix cover logic
+- `/app/test_reports/iteration_2.json` - Verificación producción
+- `/app/tests/test_cover_logic_bugfix.py` - Tests específicos bug fix
 - `/app/backend/tests/test_production.py` - Unit tests producción
 - `/app/backend/tests/test_prediction_pipeline.py` - Unit tests pipeline
 
 ---
 
 ## Operative Documents
-- `/app/RUNBOOK.md` - Guía operativa diaria
+- `/app/RUNBOOK.md` - Guía operativa diaria (actualizado v1.1 con lógica de cover corregida)
 
 ---
 
 ## Known Limitations (Accepted)
 1. **defensive_rating**: Usa promedio de liga (112) como placeholder
 2. **MAE actual (14.13)**: Superior al target ideal (<10), pero aceptable para operar
-3. **Actualización resultados**: Manual (revisar RUNBOOK.md paso 4)
+3. **Actualización resultados**: Manual (revisar RUNBOOK.md)
