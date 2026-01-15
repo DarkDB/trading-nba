@@ -15,6 +15,7 @@ import Upcoming from "./pages/Upcoming";
 import Picks from "./pages/Picks";
 import History from "./pages/History";
 import Settings from "./pages/Settings";
+import LiveOps from "./pages/LiveOps";
 
 function App() {
   return (
