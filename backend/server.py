@@ -1243,8 +1243,8 @@ async def generate_picks(
     # Apply max_picks_per_day limit
     max_picks = OPERATIONAL_CONFIG['operative_thresholds']['max_picks_per_day']
     if operative_mode and len(operative_picks) > max_picks:
-        # Sort by edge and take top N
-        operative_picks.sort(key=lambda p: abs(p['edge_points']), reverse=True)
+        # Sort by edge (descending - higher edge first) and take top N
+        operative_picks.sort(key=lambda p: p['edge_points'], reverse=True)
         operative_picks = operative_picks[:max_picks]
     
     # Log stats
