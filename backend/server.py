@@ -1151,24 +1151,34 @@ async def generate_picks(
         
         market_spread = ref_line['spread_point_home']
         
-        # CORRECTED LOGIC: Validate model actually covers the spread
-        # HOME bet: model predicts result > spread (HOME beats the spread)
-        # AWAY bet: model predicts result < spread (AWAY beats the spread)
-        # Edge is ALWAYS positive and represents the advantage on the recommended side
+        # CORRECTED COVER LOGIC
+        # =====================
+        # market_spread = -5.0 means HOME is 5-point favorite
+        # market_spread = +3.0 means HOME is 3-point underdog
+        #
+        # Cover threshold = -market_spread:
+        # - If spread=-5.0: HOME covers if pred_margin > 5 (wins by more than 5)
+        # - If spread=+3.0: HOME covers if pred_margin > -3 (doesn't lose by more than 3)
+        #
+        # HOME covers if pred_margin > cover_threshold
+        # AWAY covers if pred_margin < cover_threshold
+        # Edge is distance from threshold (always positive)
         
-        home_covers = pred_margin > market_spread
-        away_covers = pred_margin < market_spread
+        cover_threshold = -market_spread
+        
+        home_covers = pred_margin > cover_threshold
+        away_covers = pred_margin < cover_threshold
         
         if home_covers:
             recommended_side = "HOME"
-            edge_points = pred_margin - market_spread  # Always positive
+            edge_points = pred_margin - cover_threshold  # Always positive
             open_price = ref_line['price_home_decimal']
         elif away_covers:
             recommended_side = "AWAY"
-            edge_points = market_spread - pred_margin  # Always positive
+            edge_points = cover_threshold - pred_margin  # Always positive
             open_price = ref_line['price_away_decimal']
         else:
-            # pred_margin == market_spread exactly - no edge, default to HOME
+            # pred_margin == cover_threshold exactly - no edge
             recommended_side = "HOME"
             edge_points = 0.0
             open_price = ref_line['price_home_decimal']
