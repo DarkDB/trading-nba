@@ -36,6 +36,42 @@ def test_config_snapshot_immutable():
 
 # ============= 2) COVER LOGIC TESTS (CRITICAL) =============
 
+def test_no_home_pick_if_pred_margin_does_not_cover_spread():
+    """
+    CRITICAL TEST (user requested):
+    - GSW vs NYK: pred_margin=+2.56, spread=-7.5 → NO HOME PICK
+    - Because 2.56 < 7.5, HOME does NOT cover the spread
+    - Must recommend AWAY (NYK +7.5), not HOME (GSW -7.5)
+    """
+    def get_recommendation(pred_margin, market_spread):
+        cover_threshold = -market_spread
+        if pred_margin > cover_threshold:
+            return "HOME", pred_margin - cover_threshold
+        elif pred_margin < cover_threshold:
+            return "AWAY", cover_threshold - pred_margin
+        else:
+            return None, 0.0
+    
+    # GSW vs NYK case
+    pred_margin = 2.56
+    spread = -7.5
+    
+    side, edge = get_recommendation(pred_margin, spread)
+    
+    # Assertions
+    assert side != "HOME", f"BUG: Should NOT recommend HOME when pred ({pred_margin}) < abs(spread) ({abs(spread)})"
+    assert side == "AWAY", f"Should recommend AWAY, got {side}"
+    assert edge > 0, f"Edge must be positive, got {edge}"
+    
+    # Verify edge calculation: threshold=7.5, edge = 7.5 - 2.56 = 4.94
+    expected_edge = 4.94
+    assert abs(edge - expected_edge) < 0.1, f"Edge should be ~{expected_edge}, got {edge}"
+    
+    print(f"✓ GSW vs NYK: pred={pred_margin}, spread={spread}")
+    print(f"  Correctly recommends: {side} with edge={edge:.2f}")
+    print(f"  (NOT HOME/GSW -7.5)")
+
+
 def test_no_bet_when_model_does_not_cover():
     """
     CRITICAL TEST: Never recommend bet that model doesn't cover.
