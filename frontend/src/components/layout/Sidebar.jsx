@@ -9,12 +9,14 @@ import {
   History,
   Settings,
   LogOut,
-  TrendingUp
+  TrendingUp,
+  Zap
 } from 'lucide-react';
 import { Button } from '../ui/button';
 
 const navItems = [
   { path: '/dashboard', icon: TrendingUp, label: 'Dashboard' },
+  { path: '/live-ops', icon: Zap, label: 'Live Ops', highlight: true },
   { path: '/dataset', icon: Database, label: 'Dataset' },
   { path: '/train', icon: Brain, label: 'Train' },
   { path: '/upcoming', icon: Calendar, label: 'Upcoming' },
