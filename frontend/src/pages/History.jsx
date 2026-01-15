@@ -311,6 +311,14 @@ export default function History() {
                         </span>
                       </td>
                       <td className="p-3 text-right">
+                        <span className={`font-data ${
+                          (pred.clv_spread || 0) > 0 ? 'text-green-500' : 
+                          (pred.clv_spread || 0) < 0 ? 'text-red-500' : 'text-zinc-500'
+                        }`}>
+                          {pred.clv_spread != null ? (pred.clv_spread > 0 ? '+' : '') + pred.clv_spread.toFixed(2) : '-'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
                         <span className={`font-data font-bold ${
                           pred.signal === 'green' ? 'text-green-500' :
                           pred.signal === 'yellow' ? 'text-yellow-500' : 'text-red-500'
