@@ -269,6 +269,9 @@ export default function History() {
                       Spread
                     </th>
                     <th className="text-right text-xs font-semibold uppercase tracking-wider text-zinc-500 p-3">
+                      CLV
+                    </th>
+                    <th className="text-right text-xs font-semibold uppercase tracking-wider text-zinc-500 p-3">
                       Edge
                     </th>
                     <th className="text-center text-xs font-semibold uppercase tracking-wider text-zinc-500 p-3">
