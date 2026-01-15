@@ -1024,24 +1024,33 @@ async def debug_predict(event_id: str, user=Depends(get_current_user)):
     else:
         market_spread = ref_line['spread_point_home']
         
-        # CORRECTED LOGIC: Validate model actually covers the spread
-        # HOME bet: model predicts HOME wins by MORE than the spread requires
-        #   - If spread=-5.0 (HOME favored), HOME covers if pred_margin > -5.0 (HOME wins by more than 5)
-        #   - Actually: HOME covers if pred_margin > spread (pred wins the spread)
-        # AWAY bet: model predicts HOME wins by LESS than the spread (or loses)
-        #   - AWAY covers if pred_margin < spread
+        # CORRECTED COVER LOGIC
+        # =====================
+        # market_spread = -5.0 means HOME is 5-point favorite
+        # market_spread = +3.0 means HOME is 3-point underdog
+        #
+        # For spread betting, the cover threshold is -market_spread:
+        # - If spread=-5.0: HOME covers if pred_margin > 5 (wins by more than 5)
+        # - If spread=+3.0: HOME covers if pred_margin > -3 (doesn't lose by more than 3)
+        #
+        # General rule using threshold = -market_spread:
+        # - HOME covers if pred_margin > threshold (pred_margin > -market_spread)
+        # - AWAY covers if pred_margin < threshold (pred_margin < -market_spread)
+        # - Edge is distance from threshold (always positive)
         
-        home_covers = pred_margin > market_spread  # Model says HOME beats the spread
-        away_covers = pred_margin < market_spread  # Model says AWAY beats the spread
+        cover_threshold = -market_spread
+        
+        home_covers = pred_margin > cover_threshold
+        away_covers = pred_margin < cover_threshold
         
         if home_covers:
             recommended_side = "HOME"
-            edge_points = pred_margin - market_spread  # Always positive when HOME covers
+            edge_points = pred_margin - cover_threshold  # Always positive
         elif away_covers:
             recommended_side = "AWAY"
-            edge_points = market_spread - pred_margin  # Always positive when AWAY covers
+            edge_points = cover_threshold - pred_margin  # Always positive
         else:
-            # pred_margin == market_spread exactly - no edge
+            # pred_margin == cover_threshold exactly - no edge
             do_not_bet = True
             do_not_bet_reason = "NO_EDGE"
             edge_points = 0.0
