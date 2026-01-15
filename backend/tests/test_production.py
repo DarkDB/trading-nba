@@ -34,209 +34,151 @@ def test_config_snapshot_immutable():
     restored = json.loads(snapshot_str)
     assert restored == config
 
-# ============= 2) OPERATIVE FILTERS TESTS =============
-
-def test_recommended_side_logic():
-    """CORRECTED: side based on model cover, not just edge sign"""
-    def get_side_and_edge(pred_margin, market_spread):
-        """
-        HOME covers if pred_margin > market_spread
-        AWAY covers if pred_margin < market_spread
-        Edge is ALWAYS positive (advantage on recommended side)
-        """
-        if pred_margin > market_spread:
-            return "HOME", pred_margin - market_spread
-        elif pred_margin < market_spread:
-            return "AWAY", market_spread - pred_margin
-        return None, 0.0
-    
-    # Case 1: HOME favorite (-5), model says HOME wins by 8 → HOME covers
-    side, edge = get_side_and_edge(8.0, -5.0)
-    assert side == "HOME"
-    assert edge == 13.0  # 8 - (-5) = 13
-    
-    # Case 2: HOME favorite (-5), model says HOME wins by 2 → AWAY covers (doesn't beat spread)
-    side, edge = get_side_and_edge(2.0, -5.0)
-    assert side == "HOME"  # 2 > -5, so HOME covers
-    assert edge == 7.0  # 2 - (-5) = 7
-    
-    # Case 3: HOME favorite (-5), model says HOME loses by 2 (-2) → AWAY covers
-    side, edge = get_side_and_edge(-2.0, -5.0)
-    assert side == "HOME"  # -2 > -5
-    assert edge == 3.0  # -2 - (-5) = 3
-    
-    # Case 4: HOME favorite (-5), model says HOME loses by 7 (-7) → AWAY covers  
-    side, edge = get_side_and_edge(-7.0, -5.0)
-    assert side == "AWAY"  # -7 < -5
-    assert edge == 2.0  # -5 - (-7) = 2
-    
-    # Case 5: HOME underdog (+3), model says HOME wins by 1 → HOME covers
-    side, edge = get_side_and_edge(1.0, 3.0)
-    assert side == "AWAY"  # 1 < 3
-    assert edge == 2.0  # 3 - 1 = 2
+# ============= 2) COVER LOGIC TESTS (CRITICAL) =============
 
 def test_no_bet_when_model_does_not_cover():
-    """CRITICAL TEST: Never recommend bet that model doesn't cover"""
+    """
+    CRITICAL TEST: Never recommend bet that model doesn't cover.
+    
+    Bug examples from user:
+    - ORL vs MEM: pred_margin=+0.75, spread=-5.0 → Model says ORL wins by 0.75
+      but spread requires ORL to win by 5+. ORL does NOT cover. Recommend AWAY.
+    - SAS vs MIL: pred_margin=-0.97, spread=-7.5 → Model says SAS loses by 0.97
+      but spread requires SAS to win by 7.5+. SAS does NOT cover. Recommend AWAY.
+    """
     def get_recommendation(pred_margin, market_spread):
         """
-        Returns (side, edge, covers_bet)
-        covers_bet = True only if model actually covers the spread on recommended side
+        CORRECTED LOGIC:
+        - cover_threshold = -market_spread
+        - HOME covers if pred_margin > cover_threshold
+        - AWAY covers if pred_margin < cover_threshold
+        - Edge is always positive (distance from threshold)
         """
-        home_covers = pred_margin > market_spread
-        away_covers = pred_margin < market_spread
+        cover_threshold = -market_spread
         
-        if home_covers:
-            # Model says HOME beats spread
-            edge = pred_margin - market_spread
-            return "HOME", edge, True
-        elif away_covers:
-            # Model says AWAY beats spread
-            edge = market_spread - pred_margin
-            return "AWAY", edge, True
-        else:
-            return None, 0.0, False
-    
-    # BUG CASE 1: ORL vs MEM - pred_margin=+0.75, spread=-5.0
-    # Old logic: edge = 0.75 - (-5.0) = 5.75 > 0 → HOME
-    # WRONG: Model predicts ORL wins by 0.75, but spread requires ORL to win by 5+
-    # NEW logic: 0.75 > -5.0 → HOME covers, edge=5.75
-    # Actually, this IS correct - if spread is -5.0 and pred is +0.75, HOME does cover
-    # Let me re-read the user's case...
-    # Oh wait - the issue is the user expected that ORL -5.0 means ORL must win by 5
-    # But with our convention, spread=-5.0 means HOME needs to win by 5 to cover
-    # And pred=+0.75 means HOME only wins by 0.75
-    # So HOME does NOT cover the -5.0 spread!
-    # Fixed logic: 0.75 > -5.0 is True mathematically BUT...
-    # For spread bets: HOME covers if actual_margin > spread (wins by more than spread)
-    # So if spread=-5.0 (HOME -5), HOME covers if they win by MORE than 5
-    # pred=0.75 means HOME wins by 0.75, which is < 5, so HOME doesn't cover
-    # 
-    # CORRECTION: The comparison should be in absolute winning terms
-    # HOME at -5.0 covers if pred_margin >= 5 (win by at least 5)
-    # This means: pred_margin > abs(spread) when spread < 0
-    # And: pred_margin > spread when spread > 0 (underdog)
-    
-    # Actually, the spread convention is:
-    # spread_point_home = -5.0 means HOME is favored by 5
-    # HOME covers if actual_home_margin + spread >= 0
-    # i.e., actual_margin >= -spread = 5
-    # 
-    # So: HOME covers if pred_margin >= -spread (or pred_margin + spread >= 0)
-    # AWAY covers if pred_margin <= spread (or pred_margin + spread <= 0)
-    
-    # Let me fix the logic completely
-    pass
-
-def test_edge_positive_and_consistent_with_side():
-    """Edge must ALWAYS be positive and represent advantage on recommended side"""
-    def get_recommendation_v2(pred_margin, market_spread):
-        """
-        Spread convention: spread_point_home
-        - Negative spread (-5): HOME is favored, must win by 5+ to cover
-        - Positive spread (+3): HOME is underdog, can lose by up to 3 and cover
-        
-        HOME covers if: pred_margin + spread >= 0 (equivalently: pred_margin >= -spread)
-        AWAY covers if: pred_margin + spread <= 0 (equivalently: pred_margin <= -spread... no wait)
-        
-        Actually for spread betting:
-        - Bet HOME at spread S: wins if (actual_margin - S) > 0, i.e., actual > S
-        - Bet AWAY at spread -S: wins if (actual_margin - S) < 0, i.e., actual < S
-        
-        So:
-        - HOME covers if pred_margin > spread (margin exceeds the spread line)
-        - AWAY covers if pred_margin < spread (margin below the spread line)
-        """
-        if pred_margin > market_spread:
-            return "HOME", pred_margin - market_spread
-        elif pred_margin < market_spread:
-            return "AWAY", market_spread - pred_margin
+        if pred_margin > cover_threshold:
+            return "HOME", pred_margin - cover_threshold
+        elif pred_margin < cover_threshold:
+            return "AWAY", cover_threshold - pred_margin
         else:
             return None, 0.0
     
-    # Test Case 1: spread=-5.0, pred=+0.75
-    # Is 0.75 > -5.0? YES, so HOME "covers" by our math
-    # But this is the BUG the user found!
-    # The issue: spread=-5.0 means HOME must WIN by 5 to cover
-    # pred=+0.75 means HOME wins by 0.75
-    # 0.75 < 5, so HOME does NOT cover!
-    #
-    # The bug is in interpreting ">" vs "cover"
-    # spread=-5.0 from Pinnacle means: HOME line is -5.0
-    # To bet HOME -5.0, HOME must win by MORE than 5
-    # So HOME covers if pred_margin > 5 (positive 5, not -5.0)
-    #
-    # Wait, I think there's confusion about the spread sign convention.
-    # Let me think about this more carefully:
-    # 
-    # If spread_point_home = -5.0:
-    #   - HOME is favored
-    #   - Betting HOME -5.0 means HOME must win by MORE than 5 points
-    #   - Betting AWAY +5.0 means AWAY can lose by UP TO 5 points
-    #
-    # So for HOME -5.0 bet to cover: actual_margin > 5 (not > -5)
-    # 
-    # The edge should be: how many points better is pred vs line
-    # If pred=+0.75 and line=-5.0:
-    #   - Model says HOME wins by 0.75
-    #   - Line says HOME must win by 5+ to cover
-    #   - HOME does NOT cover (0.75 < 5)
-    #   - AWAY DOES cover (+5 side: HOME wins by less than 5)
-    #   - Edge for AWAY = 5 - 0.75 = 4.25
+    # BUG CASE 1: ORL vs MEM
+    # pred_margin=+0.75, spread=-5.0
+    # cover_threshold = -(-5.0) = 5.0
+    # 0.75 < 5.0 → AWAY covers
+    # edge = 5.0 - 0.75 = 4.25
+    side, edge = get_recommendation(0.75, -5.0)
+    assert side == "AWAY", f"Expected AWAY, got {side}"
+    assert abs(edge - 4.25) < 0.01, f"Expected edge ~4.25, got {edge}"
     
-    # So the CORRECT logic should be:
-    # HOME covers if pred_margin > abs(market_spread) when market_spread < 0
-    # HOME covers if pred_margin > market_spread when market_spread >= 0
-    # Simplified: HOME covers if pred_margin > abs(market_spread) * sign... no this is getting complex
-    #
-    # Let's use the standard interpretation:
-    # The spread number directly: pred_margin vs spread
-    # If spread = -5.0, betting HOME requires margin > 5 (win by more than 5)
-    # In signed terms: margin > -spread = margin > 5
-    #
-    # Actually in American betting: spread -5.0 on HOME means:
-    # final_score_home - final_score_away - 5 > 0
-    # i.e., margin > 5
-    #
-    # So: HOME bet at spread S covers if margin > -S (when S < 0)
-    # And: AWAY bet at spread -S covers if margin < -S
+    # BUG CASE 2: SAS vs MIL
+    # pred_margin=-0.97, spread=-7.5
+    # cover_threshold = -(-7.5) = 7.5
+    # -0.97 < 7.5 → AWAY covers
+    # edge = 7.5 - (-0.97) = 8.47
+    side, edge = get_recommendation(-0.97, -7.5)
+    assert side == "AWAY", f"Expected AWAY, got {side}"
+    assert abs(edge - 8.47) < 0.01, f"Expected edge ~8.47, got {edge}"
     
-    # NEW CORRECT LOGIC:
-    # HOME covers if pred_margin > -market_spread (when market_spread < 0, HOME favorite)
-    # Wait no, let me just be very explicit:
-    #
-    # market_spread = -5.0 (HOME is 5-point favorite)
-    # HOME bet pays if: margin >= 5 (HOME wins by 5 or more)
-    # AWAY bet pays if: margin <= 4 (or margin < 5 with standard rules)
-    #
-    # So threshold is at margin = 5 (or -market_spread)
-    # HOME covers: pred > -market_spread 
-    # AWAY covers: pred < -market_spread
-    # When market_spread = -5: threshold = 5
-    # pred=0.75: 0.75 < 5 → AWAY covers
-    # pred=6: 6 > 5 → HOME covers
+    # CORRECT CASE: HOME actually covers
+    # pred_margin=+8.0, spread=-5.0
+    # cover_threshold = 5.0
+    # 8.0 > 5.0 → HOME covers
+    # edge = 8.0 - 5.0 = 3.0
+    side, edge = get_recommendation(8.0, -5.0)
+    assert side == "HOME", f"Expected HOME, got {side}"
+    assert abs(edge - 3.0) < 0.01, f"Expected edge ~3.0, got {edge}"
+
+
+def test_edge_positive_and_consistent_with_side():
+    """
+    Edge must ALWAYS be positive and represent advantage on recommended side.
     
-    # This makes sense now! The fix is:
-    # threshold = -market_spread
-    # HOME covers if pred > threshold
-    # AWAY covers if pred < threshold
+    Cover threshold = -market_spread:
+    - spread=-5.0 → threshold=5.0 (HOME must win by 5+)
+    - spread=+3.0 → threshold=-3.0 (HOME can lose by up to 3)
+    """
+    def get_recommendation(pred_margin, market_spread):
+        cover_threshold = -market_spread
+        
+        if pred_margin > cover_threshold:
+            return "HOME", pred_margin - cover_threshold
+        elif pred_margin < cover_threshold:
+            return "AWAY", cover_threshold - pred_margin
+        else:
+            return None, 0.0
     
-    # Test with spread=-5.0, pred=0.75
-    spread = -5.0
-    pred = 0.75
-    threshold = -spread  # = 5.0
+    # Test 1: HOME favorite (-5), model says big HOME win (+10)
+    # threshold=5, pred=10 > 5 → HOME, edge=5
+    side, edge = get_recommendation(10.0, -5.0)
+    assert side == "HOME"
+    assert edge == 5.0
+    assert edge > 0, "Edge must be positive"
     
-    # pred=0.75 < 5.0 → AWAY covers
-    assert pred < threshold, "AWAY should cover"
-    away_edge = threshold - pred  # 5.0 - 0.75 = 4.25
-    assert away_edge == 4.25
-    assert away_edge > 0, "Edge must be positive"
+    # Test 2: HOME favorite (-5), model says small HOME win (+2)
+    # threshold=5, pred=2 < 5 → AWAY, edge=3
+    side, edge = get_recommendation(2.0, -5.0)
+    assert side == "AWAY"
+    assert edge == 3.0
+    assert edge > 0, "Edge must be positive"
     
-    # Test with spread=-5.0, pred=7.0
-    pred2 = 7.0
-    assert pred2 > threshold, "HOME should cover"
-    home_edge = pred2 - threshold  # 7.0 - 5.0 = 2.0
-    assert home_edge == 2.0
-    assert home_edge > 0, "Edge must be positive"
+    # Test 3: HOME favorite (-5), model says HOME loses (-3)
+    # threshold=5, pred=-3 < 5 → AWAY, edge=8
+    side, edge = get_recommendation(-3.0, -5.0)
+    assert side == "AWAY"
+    assert edge == 8.0
+    assert edge > 0, "Edge must be positive"
+    
+    # Test 4: HOME underdog (+3), model says HOME wins (+5)
+    # threshold=-3, pred=5 > -3 → HOME, edge=8
+    side, edge = get_recommendation(5.0, 3.0)
+    assert side == "HOME"
+    assert edge == 8.0
+    assert edge > 0, "Edge must be positive"
+    
+    # Test 5: HOME underdog (+3), model says HOME loses (-5)
+    # threshold=-3, pred=-5 < -3 → AWAY, edge=2
+    side, edge = get_recommendation(-5.0, 3.0)
+    assert side == "AWAY"
+    assert edge == 2.0
+    assert edge > 0, "Edge must be positive"
+    
+    # Test 6: Exact threshold - no edge
+    side, edge = get_recommendation(5.0, -5.0)
+    assert side is None
+    assert edge == 0.0
+
+
+def test_recommended_side_logic():
+    """Cover-based side selection with various scenarios"""
+    def get_recommendation(pred_margin, market_spread):
+        cover_threshold = -market_spread
+        if pred_margin > cover_threshold:
+            return "HOME", pred_margin - cover_threshold
+        elif pred_margin < cover_threshold:
+            return "AWAY", cover_threshold - pred_margin
+        return None, 0.0
+    
+    # HOME big favorite (-10), model says blowout (+15)
+    side, edge = get_recommendation(15.0, -10.0)
+    assert side == "HOME"
+    assert edge == 5.0  # 15 - 10 = 5
+    
+    # HOME big favorite (-10), model says close game (+3)
+    side, edge = get_recommendation(3.0, -10.0)
+    assert side == "AWAY"
+    assert edge == 7.0  # 10 - 3 = 7
+    
+    # Pick'em (spread=0), model says HOME wins by 2
+    side, edge = get_recommendation(2.0, 0.0)
+    assert side == "HOME"
+    assert edge == 2.0
+    
+    # Pick'em (spread=0), model says AWAY wins by 3 (-3)
+    side, edge = get_recommendation(-3.0, 0.0)
+    assert side == "AWAY"
+    assert edge == 3.0
 
 def test_recommended_bet_string_sign():
     """Test bet string has correct sign convention"""
