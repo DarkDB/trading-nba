@@ -54,10 +54,12 @@ export function Sidebar() {
               `flex items-center gap-3 px-4 py-3 mx-2 rounded-md transition-colors ${
                 isActive
                   ? 'bg-primary/10 text-primary'
+                  : item.highlight
+                  ? 'text-green-400 hover:text-green-300 hover:bg-green-500/10 border border-green-500/30'
                   : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
               }`
             }
-            data-testid={`nav-${item.label.toLowerCase()}`}
+            data-testid={`nav-${item.label.toLowerCase().replace(' ', '-')}`}
           >
             <item.icon className="w-5 h-5" />
             <span className="font-body text-sm font-medium">{item.label}</span>
