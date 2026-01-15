@@ -1,0 +1,112 @@
+{
+  "project_name": "NBA Edge",
+  "design_philosophy": {
+    "archetype": "The Performance Pro",
+    "core_values": ["Precision", "Data-Density", "Tactical Minimalism", "High-Stakes"],
+    "aesthetic": "Dark Mode Sports Analytics",
+    "anti_patterns": [
+      "No purple/teal gradients",
+      "No rounded-xl or rounded-2xl (stick to rounded-md or rounded-sm)",
+      "No centered text for data tables",
+      "No soft/neumorphic shadows - use 1px borders"
+    ]
+  },
+  "typography": {
+    "font_imports": [
+      "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    ],
+    "families": {
+      "headings": "Barlow Condensed, sans-serif",
+      "body": "Manrope, sans-serif",
+      "data": "JetBrains Mono, monospace"
+    },
+    "usage": {
+      "h1": "font-headings font-bold text-4xl tracking-tight uppercase text-white",
+      "h2": "font-headings font-semibold text-2xl tracking-tight text-zinc-100",
+      "h3": "font-headings font-medium text-xl text-zinc-200",
+      "body": "font-body text-sm text-zinc-400 leading-relaxed",
+      "data_value": "font-data text-sm font-medium text-zinc-100",
+      "label": "font-body text-xs font-semibold uppercase tracking-wider text-zinc-500"
+    }
+  },
+  "colors": {
+    "palette": {
+      "background": "#09090B",
+      "card": "#18181B",
+      "border": "#27272A",
+      "primary": "#22C55E",
+      "primary_foreground": "#FFFFFF",
+      "secondary": "#3B82F6",
+      "destructive": "#EF4444",
+      "warning": "#EAB308",
+      "muted": "#71717A"
+    },
+    "semantic": {
+      "edge_positive": "text-green-500 bg-green-500/10 border-green-500/20",
+      "edge_neutral": "text-yellow-500 bg-yellow-500/10 border-yellow-500/20",
+      "edge_negative": "text-red-500 bg-red-500/10 border-red-500/20",
+      "odds_value": "text-blue-400 font-data"
+    }
+  },
+  "layout": {
+    "grid_system": "Mode B: High Density Grid",
+    "container_padding": "p-6 md:p-8",
+    "gap": "gap-4 md:gap-6",
+    "radius": "rounded-md",
+    "sidebar_width": "w-64"
+  },
+  "components": {
+    "card": {
+      "style": "bg-card border border-border rounded-md shadow-none",
+      "header": "p-4 border-b border-border",
+      "content": "p-4"
+    },
+    "button": {
+      "primary": "bg-primary hover:bg-primary/90 text-white font-headings font-bold uppercase tracking-wide rounded-sm h-10 px-6",
+      "secondary": "bg-zinc-800 hover:bg-zinc-700 text-white font-headings font-medium uppercase tracking-wide rounded-sm h-10 px-4 border border-zinc-700",
+      "ghost": "hover:bg-zinc-800 text-zinc-400 hover:text-white"
+    },
+    "table": {
+      "wrapper": "border border-border rounded-md overflow-hidden",
+      "header_row": "bg-zinc-900/50 border-b border-border hover:bg-zinc-900/50",
+      "row": "hover:bg-zinc-800/50 border-b border-zinc-800/50 transition-colors",
+      "cell": "p-3 text-sm"
+    },
+    "badge": {
+      "base": "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border",
+      "variants": {
+        "green": "bg-green-500/10 text-green-500 border-green-500/20",
+        "yellow": "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
+        "red": "bg-red-500/10 text-red-500 border-red-500/20"
+      }
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": "backdrop-blur-md bg-black/40 border-b border-white/5",
+    "gradients": "None. Use solid colors or extremely subtle noise textures.",
+    "borders": "1px solid #27272A (Zinc 800). Active states use #3F3F46 (Zinc 700).",
+    "shadows": "None by default. Hover states can have shadow-lg shadow-black/50."
+  },
+  "image_urls": {
+    "login_background": "https://images.unsplash.com/photo-1558453975-d6c57ab62b20?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzd8MHwxfHNlYXJjaHwxfHxuYmElMjBiYXNrZXRiYWxsJTIwZ2FtZSUyMGFjdGlvbiUyMGRhcmslMjBhcmVuYXxlbnwwfHx8fDE3Njg0NzY4NDV8MA&ixlib=rb-4.1.0&q=85",
+    "dashboard_texture": "https://images.unsplash.com/photo-1538654865299-4b4702914ce7?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwyfHxiYXNrZXRiYWxsJTIwY291cnQlMjBmbG9vciUyMHRleHR1cmUlMjBkYXJrfGVufDB8fHx8MTc2ODQ3Njg0N3ww&ixlib=rb-4.1.0&q=85"
+  },
+  "instructions_to_main_agent": [
+    "1. INSTALL FONTS: Add the Google Fonts import to index.css immediately.",
+    "2. CONFIGURE TAILWIND: Update tailwind.config.js to use the specific colors and font families defined above.",
+    "3. SHADCN OVERRIDES: When installing shadcn components, manually override the radius to 0.375rem (rounded-md) and ensure borders are zinc-800.",
+    "4. DATA DENSITY: In tables, use 'py-2' or 'py-3' instead of default 'py-4' to show more data per screen.",
+    "5. NO PLACEHOLDERS: Use the provided image URLs. Do not use 'via.placeholder.com'.",
+    "6. TEST IDS: Add data-testid to all buttons, inputs, and key data cells (e.g., 'prediction-value', 'odds-value').",
+    "7. TOASTS: Use 'sonner' for notifications (e.g., 'Model Trained Successfully').",
+    "8. LAYOUT: Use a persistent Sidebar Layout for the dashboard. Login/Register are full-screen with the 'login_background' image."
+  ],
+  "universal_guidelines": [
+    "Do not use purple/teal gradients.",
+    "Do not center align data tables.",
+    "Use 1px borders instead of soft shadows.",
+    "Always use 'Barlow Condensed' for headings to give that 'Sports Scoreboard' feel.",
+    "Ensure Green/Red colors are accessible (use specific shades defined in palette).",
+    "Use 'JetBrains Mono' for all numbers (odds, scores, predictions) to ensure vertical alignment."
+  ]
+}
