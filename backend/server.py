@@ -1348,20 +1348,31 @@ async def export_history(user=Depends(get_current_user)):
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=[
         "created_at", "home_team", "away_team", "commence_time", "pred_margin",
-        "open_spread", "open_price", "close_spread", "close_price", "clv_spread",
-        "edge_points", "signal", "recommended_side", "recommended_bet_string",
+        "open_spread", "cover_threshold", "raw_edge_signed", "betting_edge",
+        "open_price", "close_spread", "close_price", "clv_spread",
+        "signal", "recommended_side", "recommended_bet_string",
         "actual_margin", "covered", "confidence", "model_version"
     ])
     writer.writeheader()
     
     for p in predictions:
+        # Calculate audit columns if not present (for backward compatibility)
+        spread = p.get('open_spread', 0)
+        cover_threshold = -spread if spread else 0
+        pred_margin = p.get('pred_margin', 0)
+        raw_edge_signed = pred_margin - cover_threshold
+        betting_edge = p.get('betting_edge') or p.get('edge_points', 0)
+        
         writer.writerow({
             "created_at": p.get('created_at'), "home_team": p.get('home_team'),
             "away_team": p.get('away_team'), "commence_time": p.get('commence_time'),
             "pred_margin": p.get('pred_margin'), "open_spread": p.get('open_spread'),
+            "cover_threshold": p.get('cover_threshold', cover_threshold),
+            "raw_edge_signed": p.get('raw_edge_signed', round(raw_edge_signed, 2)),
+            "betting_edge": betting_edge,
             "open_price": p.get('open_price'), "close_spread": p.get('close_spread'),
             "close_price": p.get('close_price'), "clv_spread": p.get('clv_spread'),
-            "edge_points": p.get('edge_points'), "signal": p.get('signal'),
+            "signal": p.get('signal'),
             "recommended_side": p.get('recommended_side'),
             "recommended_bet_string": p.get('recommended_bet_string'),
             "actual_margin": p.get('actual_margin'), "covered": p.get('covered'),
