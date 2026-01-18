@@ -268,17 +268,199 @@ export default function LiveOps() {
         </CardContent>
       </Card>
 
-      {/* Operative Filters Info */}
+      {/* Operative Filters Info + Audit Button */}
       {operativeMode && (
         <Card className="bg-zinc-900/50 border-border">
           <CardContent className="py-3">
-            <div className="flex items-center gap-6 text-sm flex-wrap">
-              <span className="text-zinc-500">Filtros activos:</span>
-              <Badge variant="outline" className="text-xs">GREEN only</Badge>
-              <Badge variant="outline" className="text-xs">edge ≥ 3.5</Badge>
-              <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
-              <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
-              <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">Sin límite de picks</Badge>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-6 text-sm flex-wrap">
+                <span className="text-zinc-500">Filtros activos:</span>
+                <Badge variant="outline" className="text-xs">GREEN only</Badge>
+                <Badge variant="outline" className="text-xs">edge ≥ 3.5</Badge>
+                <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
+                <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
+                <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">Sin límite de picks</Badge>
+              </div>
+              <Button
+                onClick={loadAuditReport}
+                disabled={syncing.audit}
+                variant="outline"
+                size="sm"
+                className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10"
+              >
+                {syncing.audit ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <BarChart3 className="w-4 h-4 mr-2" />}
+                Model Audit
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Model Audit Report */}
+      {showAudit && auditReport && (
+        <Card className="bg-card border-border border-yellow-500/30">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="font-headings text-xl text-white flex items-center gap-2">
+                <BarChart3 className="w-5 h-5 text-yellow-500" />
+                Model Sanity Audit
+              </CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setShowAudit(false)} className="text-zinc-400">
+                <XCircle className="w-4 h-4" />
+              </Button>
+            </div>
+            <CardDescription className="text-zinc-400">
+              Análisis de {auditReport.statistics?.n_samples || 0} predicciones
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/* Flags */}
+            {auditReport.flags && auditReport.flags.length > 0 && (
+              <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertOctagon className="w-5 h-5 text-red-500" />
+                  <span className="font-bold text-red-400">FLAGS DETECTADOS ({auditReport.flags.length})</span>
+                </div>
+                <ul className="space-y-1">
+                  {auditReport.flags.map((flag, i) => (
+                    <li key={i} className="text-red-300 text-sm font-mono">• {flag}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            
+            {auditReport.flags?.length === 0 && (
+              <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-green-500" />
+                  <span className="font-bold text-green-400">NO FLAGS - Model appears healthy</span>
+                </div>
+              </div>
+            )}
+
+            {/* Statistics Grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="p-3 bg-zinc-900/50 rounded-lg">
+                <p className="text-xs text-zinc-500 uppercase">pred_margin mean</p>
+                <p className="font-data text-xl text-white">{auditReport.statistics?.pred_margin?.mean?.toFixed(2)}</p>
+              </div>
+              <div className="p-3 bg-zinc-900/50 rounded-lg">
+                <p className="text-xs text-zinc-500 uppercase">pred_margin std</p>
+                <p className="font-data text-xl text-white">{auditReport.statistics?.pred_margin?.std?.toFixed(2)}</p>
+              </div>
+              <div className="p-3 bg-zinc-900/50 rounded-lg">
+                <p className="text-xs text-zinc-500 uppercase">mean |pred_margin|</p>
+                <p className="font-data text-xl text-white">{auditReport.statistics?.pred_margin?.mean_abs?.toFixed(2)}</p>
+              </div>
+              <div className="p-3 bg-zinc-900/50 rounded-lg">
+                <p className="text-xs text-zinc-500 uppercase">pred_margin range</p>
+                <p className="font-data text-lg text-white">{auditReport.statistics?.pred_margin?.min?.toFixed(1)} to {auditReport.statistics?.pred_margin?.max?.toFixed(1)}</p>
+              </div>
+            </div>
+
+            {/* Distribution Stats */}
+            <div>
+              <h4 className="text-sm font-bold text-zinc-400 mb-3 uppercase">Distribución</h4>
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+                <div className="p-2 bg-zinc-900/50 rounded text-center">
+                  <p className="text-xs text-zinc-500">|pred| &gt; 10</p>
+                  <p className={`font-data font-bold ${auditReport.statistics?.distributions?.pct_abs_pred_margin_gt_10 > 30 ? 'text-yellow-400' : 'text-white'}`}>
+                    {auditReport.statistics?.distributions?.pct_abs_pred_margin_gt_10}%
+                  </p>
+                </div>
+                <div className="p-2 bg-zinc-900/50 rounded text-center">
+                  <p className="text-xs text-zinc-500">|pred| &gt; 15</p>
+                  <p className={`font-data font-bold ${auditReport.statistics?.distributions?.pct_abs_pred_margin_gt_15 > 25 ? 'text-red-400' : 'text-white'}`}>
+                    {auditReport.statistics?.distributions?.pct_abs_pred_margin_gt_15}%
+                  </p>
+                </div>
+                <div className="p-2 bg-zinc-900/50 rounded text-center">
+                  <p className="text-xs text-zinc-500">|pred| &gt; 20</p>
+                  <p className={`font-data font-bold ${auditReport.statistics?.distributions?.pct_abs_pred_margin_gt_20 > 15 ? 'text-red-400' : 'text-white'}`}>
+                    {auditReport.statistics?.distributions?.pct_abs_pred_margin_gt_20}%
+                  </p>
+                </div>
+                <div className="p-2 bg-zinc-900/50 rounded text-center">
+                  <p className="text-xs text-zinc-500">edge ≥ 8</p>
+                  <p className="font-data font-bold text-white">{auditReport.statistics?.distributions?.pct_betting_edge_gte_8}%</p>
+                </div>
+                <div className="p-2 bg-zinc-900/50 rounded text-center">
+                  <p className="text-xs text-zinc-500">edge ≥ 10</p>
+                  <p className="font-data font-bold text-white">{auditReport.statistics?.distributions?.pct_betting_edge_gte_10}%</p>
+                </div>
+                <div className="p-2 bg-zinc-900/50 rounded text-center">
+                  <p className="text-xs text-zinc-500">edge ≥ 12</p>
+                  <p className="font-data font-bold text-white">{auditReport.statistics?.distributions?.pct_betting_edge_gte_12}%</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Top 10 Extreme Picks */}
+            <div>
+              <h4 className="text-sm font-bold text-zinc-400 mb-3 uppercase">Top 10 Picks Más Extremos (por betting_edge)</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-700">
+                      <th className="text-left p-2 text-xs text-zinc-500">Teams</th>
+                      <th className="text-right p-2 text-xs text-zinc-500">pred_margin</th>
+                      <th className="text-right p-2 text-xs text-zinc-500">spread</th>
+                      <th className="text-right p-2 text-xs text-zinc-500">threshold</th>
+                      <th className="text-right p-2 text-xs text-zinc-500">raw_edge</th>
+                      <th className="text-right p-2 text-xs text-zinc-500">betting_edge</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditReport.top_10_extreme_picks?.map((pick, i) => (
+                      <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
+                        <td className="p-2 text-white">{pick.home_team?.slice(0, 15)} vs {pick.away_team?.slice(0, 15)}</td>
+                        <td className={`p-2 text-right font-data ${Math.abs(pick.pred_margin) > 15 ? 'text-red-400' : 'text-white'}`}>
+                          {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(2)}
+                        </td>
+                        <td className="p-2 text-right font-data text-blue-400">{pick.market_spread?.toFixed(1)}</td>
+                        <td className="p-2 text-right font-data text-zinc-400">{pick.cover_threshold?.toFixed(1)}</td>
+                        <td className="p-2 text-right font-data text-yellow-400">{pick.raw_edge_signed > 0 ? '+' : ''}{pick.raw_edge_signed?.toFixed(2)}</td>
+                        <td className={`p-2 text-right font-data font-bold ${pick.betting_edge > 10 ? 'text-red-400' : 'text-green-400'}`}>
+                          {pick.betting_edge?.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Model Info */}
+            <div>
+              <h4 className="text-sm font-bold text-zinc-400 mb-3 uppercase">Model Info</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <span className="text-zinc-500">Version:</span>
+                  <span className="text-white ml-2 font-data">{auditReport.model_info?.model_version}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">Intercept:</span>
+                  <span className="text-white ml-2 font-data">{auditReport.model_info?.intercept}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">MAE:</span>
+                  <span className="text-white ml-2 font-data">{auditReport.model_info?.mae?.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">RMSE:</span>
+                  <span className="text-white ml-2 font-data">{auditReport.model_info?.rmse?.toFixed(2)}</span>
+                </div>
+              </div>
+              <div className="mt-3 p-3 bg-zinc-900/50 rounded">
+                <p className="text-xs text-zinc-500 mb-2">Coefficients:</p>
+                <div className="flex flex-wrap gap-2">
+                  {auditReport.model_info?.coefficients && Object.entries(auditReport.model_info.coefficients).map(([k, v]) => (
+                    <Badge key={k} variant="outline" className="text-xs font-data">
+                      {k}: {v?.toFixed(3)}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -310,34 +492,49 @@ export default function LiveOps() {
                     <th className="text-center text-xs text-zinc-400 p-3 uppercase tracking-wider">Apuesta</th>
                     <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Pred</th>
                     <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Spread</th>
-                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Edge</th>
+                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Threshold</th>
+                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Raw Edge</th>
+                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Bet Edge</th>
                     <th className="text-center text-xs text-zinc-400 p-3 uppercase tracking-wider">Conf</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {operativePicks.map((pick, idx) => (
-                    <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/5' : ''}`}>
-                      <td className="p-3">
-                        <div className="flex flex-col">
-                          <span className="text-white font-medium">{pick.home_team}</span>
-                          <span className="text-zinc-400 text-sm">vs {pick.away_team}</span>
-                        </div>
-                      </td>
-                      <td className="p-3 text-sm text-zinc-400 whitespace-nowrap">{pick.commence_time_local}</td>
-                      <td className="p-3 text-center">
-                        <Badge className="bg-primary/20 text-primary border-primary/50 font-data font-bold text-sm px-3">
-                          {pick.recommended_bet_string}
-                        </Badge>
-                      </td>
-                      <td className="p-3 text-right font-data text-white">
-                        {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(2)}
-                      </td>
-                      <td className="p-3 text-right font-data text-blue-400">
-                        {pick.open_spread > 0 ? '+' : ''}{pick.open_spread?.toFixed(1)}
-                      </td>
-                      <td className="p-3 text-right font-data font-bold text-green-400">
-                        +{pick.edge_points?.toFixed(2)}
-                      </td>
+                  {operativePicks.map((pick, idx) => {
+                    // Calculate audit columns if not present
+                    const spread = pick.open_spread || 0;
+                    const coverThreshold = pick.cover_threshold ?? -spread;
+                    const rawEdge = pick.raw_edge_signed ?? (pick.pred_margin - coverThreshold);
+                    const bettingEdge = pick.betting_edge ?? pick.edge_points ?? Math.abs(rawEdge);
+                    
+                    return (
+                      <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/5' : ''}`}>
+                        <td className="p-3">
+                          <div className="flex flex-col">
+                            <span className="text-white font-medium">{pick.home_team}</span>
+                            <span className="text-zinc-400 text-sm">vs {pick.away_team}</span>
+                          </div>
+                        </td>
+                        <td className="p-3 text-sm text-zinc-400 whitespace-nowrap">{pick.commence_time_local}</td>
+                        <td className="p-3 text-center">
+                          <Badge className="bg-primary/20 text-primary border-primary/50 font-data font-bold text-sm px-3">
+                            {pick.recommended_bet_string}
+                          </Badge>
+                        </td>
+                        <td className={`p-3 text-right font-data ${Math.abs(pick.pred_margin) > 15 ? 'text-red-400' : 'text-white'}`}>
+                          {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(2)}
+                        </td>
+                        <td className="p-3 text-right font-data text-blue-400">
+                          {spread > 0 ? '+' : ''}{spread?.toFixed(1)}
+                        </td>
+                        <td className="p-3 text-right font-data text-zinc-400">
+                          {coverThreshold > 0 ? '+' : ''}{coverThreshold?.toFixed(1)}
+                        </td>
+                        <td className="p-3 text-right font-data text-yellow-400">
+                          {rawEdge > 0 ? '+' : ''}{rawEdge?.toFixed(2)}
+                        </td>
+                        <td className={`p-3 text-right font-data font-bold ${bettingEdge > 10 ? 'text-red-400' : 'text-green-400'}`}>
+                          +{bettingEdge?.toFixed(2)}
+                        </td>
                       <td className="p-3 text-center">
                         <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">
                           HIGH
