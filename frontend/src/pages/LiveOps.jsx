@@ -17,13 +17,17 @@ import {
   XCircle,
   TrendingUp,
   Calendar,
-  DollarSign
+  DollarSign,
+  BarChart3,
+  AlertOctagon
 } from 'lucide-react';
 
 export default function LiveOps() {
   const [operativePicks, setOperativePicks] = useState([]);
   const [allPicks, setAllPicks] = useState([]);
   const [modelInfo, setModelInfo] = useState(null);
+  const [auditReport, setAuditReport] = useState(null);
+  const [showAudit, setShowAudit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState({});
   const [operativeMode, setOperativeMode] = useState(true);
