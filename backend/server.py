@@ -1215,6 +1215,9 @@ async def generate_picks(
         
         now_ts = datetime.now(timezone.utc).isoformat()
         
+        # Audit columns for observability
+        raw_edge_signed = pred_margin - cover_threshold  # With sign (positive=HOME, negative=AWAY)
+        
         pick = {
             "id": str(uuid.uuid4()),
             "user_id": user['id'],
@@ -1230,7 +1233,11 @@ async def generate_picks(
             "open_price": open_price,
             "open_ts": now_ts,
             "market_spread_used": market_spread,
-            "edge_points": round(edge_points, 2),
+            # Audit columns
+            "cover_threshold": round(cover_threshold, 2),
+            "raw_edge_signed": round(raw_edge_signed, 2),
+            "betting_edge": round(edge_points, 2),  # Always positive
+            "edge_points": round(edge_points, 2),  # Keep for backward compatibility
             "signal": signal,
             "confidence": matchup_data['confidence'],
             "recommended_side": recommended_side,
