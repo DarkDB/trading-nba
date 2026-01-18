@@ -1383,6 +1383,158 @@ async def export_history(user=Depends(get_current_user)):
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv",
                             headers={"Content-Disposition": "attachment; filename=nba_edge_history.csv"})
 
+# ============= MODEL AUDIT ROUTES =============
+
+@api_router.get("/audit/model-sanity")
+async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
+    """
+    Generate a quantitative sanity report for model predictions.
+    Analyzes the last N predictions for scale/calibration issues.
+    """
+    import numpy as np
+    
+    # Get the last N picks from current session (or generate fresh ones)
+    # We'll analyze from the picks/generate endpoint data
+    
+    # First, let's get the model
+    model_doc = await db.models.find_one({"is_active": True})
+    if not model_doc:
+        return {"error": "No active model", "flags": ["NO_MODEL"]}
+    
+    # Get upcoming events with lines
+    events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)
+    if not events:
+        return {"error": "No upcoming events", "flags": ["NO_EVENTS"]}
+    
+    # Load model
+    import joblib
+    import io
+    model = joblib.load(io.BytesIO(model_doc['model_binary']))
+    scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
+    feature_cols = model_doc['feature_columns']
+    
+    # Analyze all available predictions
+    analysis_data = []
+    
+    for event in events:
+        # Get lines
+        lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
+        ref_line = get_reference_line(lines)
+        if not ref_line:
+            continue
+        
+        # Get team mappings
+        home_abbr = NBA_ODDS_TO_STATS_MAPPING.get(event['home_team'], event['home_team'][:3].upper())
+        away_abbr = NBA_ODDS_TO_STATS_MAPPING.get(event['away_team'], event['away_team'][:3].upper())
+        
+        # Get features
+        matchup_data = await build_matchup_features_for_prediction(home_abbr, away_abbr)
+        if not matchup_data:
+            continue
+        
+        features = matchup_data['features']
+        X = np.array([[features.get(col, 0) for col in feature_cols]])
+        X_scaled = scaler.transform(X)
+        pred_margin = float(model.predict(X_scaled)[0])
+        
+        market_spread = ref_line['spread_point_home']
+        cover_threshold = -market_spread
+        raw_edge_signed = pred_margin - cover_threshold
+        betting_edge = abs(raw_edge_signed)
+        
+        # Calculate feature contributions
+        contributions = {}
+        for i, col in enumerate(feature_cols):
+            contributions[col] = round(float(model.coef_[i]) * X_scaled[0][i], 4)
+        
+        analysis_data.append({
+            "home_team": event['home_team'],
+            "away_team": event['away_team'],
+            "pred_margin": round(pred_margin, 2),
+            "market_spread": market_spread,
+            "cover_threshold": round(cover_threshold, 2),
+            "raw_edge_signed": round(raw_edge_signed, 2),
+            "betting_edge": round(betting_edge, 2),
+            "features_raw": {k: round(v, 4) for k, v in features.items()},
+            "feature_contributions": contributions,
+            "intercept_contribution": round(float(model.intercept_), 4)
+        })
+    
+    if not analysis_data:
+        return {"error": "No data to analyze", "flags": ["NO_DATA"]}
+    
+    # Calculate statistics
+    pred_margins = [d['pred_margin'] for d in analysis_data]
+    cover_thresholds = [d['cover_threshold'] for d in analysis_data]
+    betting_edges = [d['betting_edge'] for d in analysis_data]
+    
+    n_samples = len(pred_margins)
+    
+    stats = {
+        "n_samples": n_samples,
+        "pred_margin": {
+            "mean": round(np.mean(pred_margins), 2),
+            "std": round(np.std(pred_margins), 2),
+            "min": round(np.min(pred_margins), 2),
+            "max": round(np.max(pred_margins), 2),
+            "mean_abs": round(np.mean(np.abs(pred_margins)), 2),
+            "median": round(np.median(pred_margins), 2),
+        },
+        "cover_threshold": {
+            "mean": round(np.mean(cover_thresholds), 2),
+            "std": round(np.std(cover_thresholds), 2),
+        },
+        "betting_edge": {
+            "mean": round(np.mean(betting_edges), 2),
+            "std": round(np.std(betting_edges), 2),
+            "min": round(np.min(betting_edges), 2),
+            "max": round(np.max(betting_edges), 2),
+        },
+        "distributions": {
+            "pct_abs_pred_margin_gt_10": round(100 * sum(1 for p in pred_margins if abs(p) > 10) / n_samples, 1),
+            "pct_abs_pred_margin_gt_15": round(100 * sum(1 for p in pred_margins if abs(p) > 15) / n_samples, 1),
+            "pct_abs_pred_margin_gt_20": round(100 * sum(1 for p in pred_margins if abs(p) > 20) / n_samples, 1),
+            "pct_betting_edge_gte_8": round(100 * sum(1 for e in betting_edges if e >= 8) / n_samples, 1),
+            "pct_betting_edge_gte_10": round(100 * sum(1 for e in betting_edges if e >= 10) / n_samples, 1),
+            "pct_betting_edge_gte_12": round(100 * sum(1 for e in betting_edges if e >= 12) / n_samples, 1),
+        }
+    }
+    
+    # Generate flags
+    flags = []
+    if stats["distributions"]["pct_abs_pred_margin_gt_15"] > 25:
+        flags.append("POSSIBLE_SCALE_CALIBRATION_ISSUE")
+    if stats["distributions"]["pct_abs_pred_margin_gt_20"] > 15:
+        flags.append("LIKELY_SCALE_ISSUE")
+    if stats["pred_margin"]["std"] > 12:
+        flags.append("HIGH_PREDICTION_VARIANCE")
+    if stats["betting_edge"]["mean"] > 8:
+        flags.append("UNUSUALLY_HIGH_AVERAGE_EDGE")
+    
+    # Get top 10 most extreme by betting_edge
+    sorted_data = sorted(analysis_data, key=lambda x: x['betting_edge'], reverse=True)
+    top_10_extreme = sorted_data[:10]
+    
+    # Model info
+    model_info = {
+        "model_version": model_doc.get('model_version'),
+        "intercept": round(float(model.intercept_), 4),
+        "coefficients": {col: round(float(coef), 4) for col, coef in zip(feature_cols, model.coef_)},
+        "mae": model_doc.get('metrics', {}).get('mae'),
+        "rmse": model_doc.get('metrics', {}).get('rmse'),
+    }
+    
+    return {
+        "report_type": "MODEL_SANITY_AUDIT",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_info": model_info,
+        "statistics": stats,
+        "flags": flags,
+        "flag_count": len(flags),
+        "top_10_extreme_picks": top_10_extreme,
+        "all_analyzed_picks": analysis_data
+    }
+
 # ============= STATS ROUTES =============
 
 @api_router.get("/stats/dataset")
