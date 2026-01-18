@@ -55,6 +55,29 @@ export default function LiveOps() {
     }
   };
 
+  const loadAuditReport = async () => {
+    setSyncing(prev => ({ ...prev, audit: true }));
+    try {
+      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/audit/model-sanity?n=200`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}`
+        }
+      });
+      const data = await response.json();
+      setAuditReport(data);
+      setShowAudit(true);
+      if (data.flags && data.flags.length > 0) {
+        toast.warning(`Audit found ${data.flags.length} flag(s)`);
+      } else {
+        toast.success('Audit complete - no issues found');
+      }
+    } catch (error) {
+      toast.error('Failed to load audit report');
+    } finally {
+      setSyncing(prev => ({ ...prev, audit: false }));
+    }
+  };
+
   const handleAction = async (action, key) => {
     setSyncing(prev => ({ ...prev, [key]: true }));
     try {
