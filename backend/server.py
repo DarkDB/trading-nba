@@ -1259,12 +1259,15 @@ async def generate_picks(
         if not do_not_bet:
             operative_picks.append(pick)
     
-    # Apply max_picks_per_day limit
+    # Apply max_picks_per_day limit (only if configured)
     max_picks = OPERATIONAL_CONFIG['operative_thresholds']['max_picks_per_day']
-    if operative_mode and len(operative_picks) > max_picks:
+    if operative_mode and max_picks is not None and len(operative_picks) > max_picks:
         # Sort by edge (descending - higher edge first) and take top N
         operative_picks.sort(key=lambda p: p['edge_points'], reverse=True)
         operative_picks = operative_picks[:max_picks]
+    elif operative_mode:
+        # Sort by edge even without limit for better display
+        operative_picks.sort(key=lambda p: p['edge_points'], reverse=True)
     
     # Log stats
     logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}")
