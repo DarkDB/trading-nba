@@ -36,7 +36,7 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 # ============= OPERATIONAL CONFIG (V1.0) =============
 OPERATIONAL_CONFIG = {
-    "version": "1.0",
+    "version": "1.1",
     "rolling_window_n": 15,
     "feature_list": ["diff_net_rating", "diff_pace", "diff_efg", "diff_tov_pct", 
                      "diff_orb_pct", "diff_ftr", "diff_rest", "home_advantage"],
@@ -48,7 +48,7 @@ OPERATIONAL_CONFIG = {
     },
     "operative_thresholds": {
         "min_edge": 3.5,
-        "max_picks_per_day": 2,
+        "max_picks_per_day": None,  # None = sin límite, muestra todos los válidos
         "require_high_confidence": True,
         "require_green_signal": True,
         "require_pinnacle": True
