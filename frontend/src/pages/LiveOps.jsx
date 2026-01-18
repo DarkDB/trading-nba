@@ -245,17 +245,85 @@ export default function LiveOps() {
       {operativeMode && (
         <Card className="bg-zinc-900/50 border-border">
           <CardContent className="py-3">
-            <div className="flex items-center gap-6 text-sm">
+            <div className="flex items-center gap-6 text-sm flex-wrap">
               <span className="text-zinc-500">Filtros activos:</span>
               <Badge variant="outline" className="text-xs">GREEN only</Badge>
-              <Badge variant="outline" className="text-xs">|edge| ≥ 3.5</Badge>
+              <Badge variant="outline" className="text-xs">edge ≥ 3.5</Badge>
               <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
               <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
-              <Badge variant="outline" className="text-xs">Max 2/day</Badge>
+              <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">Sin límite de picks</Badge>
             </div>
           </CardContent>
         </Card>
       )}
+
+      {/* All Valid Picks - Main Section */}
+      <Card className="bg-card border-border border-primary/50">
+        <CardHeader>
+          <CardTitle className="font-headings text-xl text-white flex items-center gap-2">
+            <CheckCircle className="w-5 h-5 text-primary" />
+            All Valid Picks ({operativePicks.length})
+          </CardTitle>
+          <CardDescription className="text-zinc-400">
+            Picks que cumplen: Pinnacle + HIGH confidence + cover_side válido + edge ≥ 3.5 (GREEN)
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {operativePicks.length === 0 ? (
+            <div className="text-center py-8 text-zinc-500">
+              No hay picks válidos. Ejecuta Sync Upcoming → Sync Odds → Generate Picks
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-zinc-700">
+                    <th className="text-left text-xs text-zinc-400 p-3 uppercase tracking-wider">Partido</th>
+                    <th className="text-left text-xs text-zinc-400 p-3 uppercase tracking-wider">Hora</th>
+                    <th className="text-center text-xs text-zinc-400 p-3 uppercase tracking-wider">Apuesta</th>
+                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Pred</th>
+                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Spread</th>
+                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Edge</th>
+                    <th className="text-center text-xs text-zinc-400 p-3 uppercase tracking-wider">Conf</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {operativePicks.map((pick, idx) => (
+                    <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/5' : ''}`}>
+                      <td className="p-3">
+                        <div className="flex flex-col">
+                          <span className="text-white font-medium">{pick.home_team}</span>
+                          <span className="text-zinc-400 text-sm">vs {pick.away_team}</span>
+                        </div>
+                      </td>
+                      <td className="p-3 text-sm text-zinc-400 whitespace-nowrap">{pick.commence_time_local}</td>
+                      <td className="p-3 text-center">
+                        <Badge className="bg-primary/20 text-primary border-primary/50 font-data font-bold text-sm px-3">
+                          {pick.recommended_bet_string}
+                        </Badge>
+                      </td>
+                      <td className="p-3 text-right font-data text-white">
+                        {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(2)}
+                      </td>
+                      <td className="p-3 text-right font-data text-blue-400">
+                        {pick.open_spread > 0 ? '+' : ''}{pick.open_spread?.toFixed(1)}
+                      </td>
+                      <td className="p-3 text-right font-data font-bold text-green-400">
+                        +{pick.edge_points?.toFixed(2)}
+                      </td>
+                      <td className="p-3 text-center">
+                        <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">
+                          HIGH
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Today's Picks */}
       <Card className="bg-card border-border border-green-500/30">
