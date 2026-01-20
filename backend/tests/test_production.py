@@ -389,7 +389,130 @@ def test_edge_calculation():
     # Exact threshold: no edge
     assert calc_edge(5.0, -5.0) == 0.0
 
-# ============= 7) METRICS TESTS =============
+# ============= 7) PROBABILITY AND EV TESTS =============
+
+def test_normal_cdf():
+    """Test normal CDF implementation"""
+    import math
+    
+    def normal_cdf(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    
+    # Standard normal CDF properties
+    assert abs(normal_cdf(0) - 0.5) < 0.001  # CDF(0) = 0.5
+    assert normal_cdf(-10) < 0.001  # Very negative → ~0
+    assert normal_cdf(10) > 0.999  # Very positive → ~1
+    assert abs(normal_cdf(1.96) - 0.975) < 0.01  # 95% CI
+
+def test_probability_monotonicity():
+    """
+    Test: A mayor raw_edge_signed => mayor p_cover (según lado)
+    For HOME: higher pred_margin relative to threshold → higher p_cover
+    For AWAY: lower pred_margin relative to threshold → higher p_cover
+    """
+    import math
+    
+    def normal_cdf(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    
+    def calculate_p_cover(pred_margin, cover_threshold, sigma, recommended_side):
+        z = (pred_margin - cover_threshold) / sigma
+        if recommended_side == "HOME":
+            return normal_cdf(z)
+        else:
+            return normal_cdf(-z)
+    
+    sigma = 12.0
+    cover_threshold = 5.0  # From spread=-5.0
+    
+    # Test HOME: higher pred_margin → higher p_cover
+    p1 = calculate_p_cover(6.0, cover_threshold, sigma, "HOME")
+    p2 = calculate_p_cover(8.0, cover_threshold, sigma, "HOME")
+    p3 = calculate_p_cover(12.0, cover_threshold, sigma, "HOME")
+    
+    assert p1 < p2 < p3, "HOME p_cover should increase with pred_margin"
+    
+    # Test AWAY: lower pred_margin → higher p_cover
+    p4 = calculate_p_cover(4.0, cover_threshold, sigma, "AWAY")
+    p5 = calculate_p_cover(2.0, cover_threshold, sigma, "AWAY")
+    p6 = calculate_p_cover(-2.0, cover_threshold, sigma, "AWAY")
+    
+    assert p4 < p5 < p6, "AWAY p_cover should increase as pred_margin decreases"
+
+def test_ev_sign():
+    """
+    Test: EV positivo cuando p_cover > 1/price (implied prob)
+    EV = p_cover * price - 1
+    """
+    def calculate_ev(p_cover, price):
+        return p_cover * price - 1.0
+    
+    # Fair odds: price=2.0 (50% implied), p=50% → EV=0
+    ev1 = calculate_ev(0.5, 2.0)
+    assert abs(ev1) < 0.001, "EV should be 0 for fair odds"
+    
+    # Edge case: p=60%, price=2.0 → EV=0.2 (20% edge)
+    ev2 = calculate_ev(0.6, 2.0)
+    assert abs(ev2 - 0.2) < 0.001
+    
+    # Typical: p=55%, price=1.91 → EV = 0.55*1.91 - 1 = 0.0505
+    ev3 = calculate_ev(0.55, 1.91)
+    assert ev3 > 0, "Should have positive EV"
+    assert abs(ev3 - 0.0505) < 0.01
+    
+    # No edge: p=52%, price=1.91 → EV = 0.52*1.91 - 1 = -0.0068
+    ev4 = calculate_ev(0.52, 1.91)
+    assert ev4 < 0, "Should have negative EV"
+
+def test_sigma_reasonable_range():
+    """
+    Test: sigma should be in reasonable range 8 <= sigma <= 20
+    NBA game margins typically have std dev around 12-14
+    """
+    # Test warning thresholds
+    def check_sigma(sigma):
+        flags = []
+        if sigma < 8:
+            flags.append("WARNING: sigma < 8")
+        if sigma > 20:
+            flags.append("WARNING: sigma > 20")
+        return flags
+    
+    assert check_sigma(12.0) == []  # Normal range
+    assert check_sigma(14.0) == []  # Normal range
+    assert len(check_sigma(5.0)) > 0  # Too low
+    assert len(check_sigma(25.0)) > 0  # Too high
+
+def test_p_cover_boundary_cases():
+    """Test p_cover at boundary cases"""
+    import math
+    
+    def normal_cdf(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    
+    def calculate_p_cover(pred_margin, cover_threshold, sigma, recommended_side):
+        z = (pred_margin - cover_threshold) / sigma
+        if recommended_side == "HOME":
+            return normal_cdf(z)
+        else:
+            return normal_cdf(-z)
+    
+    sigma = 12.0
+    threshold = 5.0
+    
+    # At threshold: p_cover should be ~50%
+    p_at_threshold = calculate_p_cover(5.0, threshold, sigma, "HOME")
+    assert abs(p_at_threshold - 0.5) < 0.01, "At threshold, p_cover should be ~50%"
+    
+    # 1 sigma above threshold: ~84%
+    p_1sigma = calculate_p_cover(5.0 + sigma, threshold, sigma, "HOME")
+    assert abs(p_1sigma - 0.84) < 0.02
+    
+    # 2 sigma above: ~98%
+    p_2sigma = calculate_p_cover(5.0 + 2*sigma, threshold, sigma, "HOME")
+    assert p_2sigma > 0.97
+
+# ============= 8) METRICS TESTS =============
 
 def test_metrics_structure():
     """Test metrics structure for model"""
@@ -425,6 +548,11 @@ if __name__ == "__main__":
         ("test_do_not_bet_reasons", test_do_not_bet_reasons),
         ("test_signal_thresholds", test_signal_thresholds),
         ("test_edge_calculation", test_edge_calculation),
+        ("test_normal_cdf", test_normal_cdf),
+        ("test_probability_monotonicity", test_probability_monotonicity),
+        ("test_ev_sign", test_ev_sign),
+        ("test_sigma_reasonable_range", test_sigma_reasonable_range),
+        ("test_p_cover_boundary_cases", test_p_cover_boundary_cases),
         ("test_metrics_structure", test_metrics_structure),
     ]
     
