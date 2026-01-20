@@ -268,16 +268,61 @@ export default function LiveOps() {
         </CardContent>
       </Card>
 
-      {/* Operative Filters Info + Audit Button */}
+      {/* Operative Filters Info + Sigma + Audit Button */}
       {operativeMode && (
         <Card className="bg-zinc-900/50 border-border">
           <CardContent className="py-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-6 text-sm flex-wrap">
-                <span className="text-zinc-500">Filtros activos:</span>
-                <Badge variant="outline" className="text-xs">GREEN only</Badge>
-                <Badge variant="outline" className="text-xs">edge ≥ 3.5</Badge>
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-4 text-sm flex-wrap">
+                <span className="text-zinc-500">Filtros (EV mode):</span>
+                <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">EV ≥ 2%</Badge>
                 <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
+                <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
+                <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/30">σ = {auditReport?.model_info?.sigma || 12.0}</Badge>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  onClick={async () => {
+                    setSyncing(prev => ({ ...prev, sigma: true }));
+                    try {
+                      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/model/sigma/recompute`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
+                      });
+                      const data = await response.json();
+                      if (data.sigma_global) {
+                        toast.success(`Sigma recalculado: ${data.sigma_global} (n=${data.n_samples})`);
+                        loadAuditReport();
+                      }
+                    } catch (e) {
+                      toast.error('Error computing sigma');
+                    } finally {
+                      setSyncing(prev => ({ ...prev, sigma: false }));
+                    }
+                  }}
+                  disabled={syncing.sigma}
+                  variant="outline"
+                  size="sm"
+                  className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+                >
+                  {syncing.sigma ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                  Recompute σ
+                </Button>
+                <Button
+                  onClick={loadAuditReport}
+                  disabled={syncing.audit}
+                  variant="outline"
+                  size="sm"
+                  className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10"
+                >
+                  {syncing.audit ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <BarChart3 className="w-4 h-4 mr-2" />}
+                  Model Audit
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
                 <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
                 <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">Sin límite de picks</Badge>
               </div>
