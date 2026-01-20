@@ -1325,7 +1325,7 @@ async def generate_picks(
     operative_mode: bool = Query(True, description="Apply operative filters"),
     user=Depends(get_current_user)
 ):
-    """Generate picks with full operative controls"""
+    """Generate picks with probability and EV calculations"""
     import numpy as np
     
     model_data = await get_active_model()
@@ -1337,6 +1337,10 @@ async def generate_picks(
     feature_cols = model_data['features']
     model_version = model_data['model_version']
     model_id = model_data['model_id']
+    
+    # Get sigma from calibration
+    sigma_doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
+    sigma = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
     
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(50)
     
@@ -1366,19 +1370,7 @@ async def generate_picks(
         
         market_spread = ref_line['spread_point_home']
         
-        # CORRECTED COVER LOGIC
-        # =====================
-        # market_spread = -5.0 means HOME is 5-point favorite
-        # market_spread = +3.0 means HOME is 3-point underdog
-        #
-        # Cover threshold = -market_spread:
-        # - If spread=-5.0: HOME covers if pred_margin > 5 (wins by more than 5)
-        # - If spread=+3.0: HOME covers if pred_margin > -3 (doesn't lose by more than 3)
-        #
-        # HOME covers if pred_margin > cover_threshold
-        # AWAY covers if pred_margin < cover_threshold
-        # Edge is distance from threshold (always positive)
-        
+        # Cover threshold calculation
         cover_threshold = -market_spread
         
         home_covers = pred_margin > cover_threshold
@@ -1386,19 +1378,27 @@ async def generate_picks(
         
         if home_covers:
             recommended_side = "HOME"
-            edge_points = pred_margin - cover_threshold  # Always positive
+            edge_points = pred_margin - cover_threshold
             open_price = ref_line['price_home_decimal']
         elif away_covers:
             recommended_side = "AWAY"
-            edge_points = cover_threshold - pred_margin  # Always positive
+            edge_points = cover_threshold - pred_margin
             open_price = ref_line['price_away_decimal']
         else:
-            # pred_margin == cover_threshold exactly - no edge
             recommended_side = "HOME"
             edge_points = 0.0
             open_price = ref_line['price_home_decimal']
         
-        signal = calculate_signal(edge_points)
+        # Calculate probability and EV
+        p_cover = calculate_p_cover(pred_margin, cover_threshold, sigma, recommended_side)
+        implied_prob = 1.0 / open_price if open_price > 1.0 else 0.5
+        ev = calculate_ev(p_cover, open_price)
+        
+        # Signal based on EV (new system)
+        signal_ev = calculate_signal_ev(ev)
+        signal_edge = calculate_signal(edge_points)  # Keep for backward compat
+        
+        raw_edge_signed = pred_margin - cover_threshold
         
         recommended_bet_string = generate_recommended_bet_string(
             event['home_team'], event['away_team'], home_abbr, away_abbr,
@@ -1411,9 +1411,10 @@ async def generate_picks(
             recommended_side, matchup_data['confidence'], model_version
         )
         
-        # Determine do_not_bet and reason
+        # Determine do_not_bet and reason (now based on EV)
         do_not_bet = False
         do_not_bet_reason = None
+        min_ev = OPERATIONAL_CONFIG['operative_thresholds']['min_ev']
         
         if not has_pinnacle:
             do_not_bet = True
@@ -1421,17 +1422,11 @@ async def generate_picks(
         elif matchup_data['confidence'] != 'high':
             do_not_bet = True
             do_not_bet_reason = "LOW_CONFIDENCE"
-        elif edge_points < OPERATIONAL_CONFIG['operative_thresholds']['min_edge']:
+        elif ev < min_ev:
             do_not_bet = True
-            do_not_bet_reason = "EDGE_TOO_SMALL"
-        elif signal != 'green':
-            do_not_bet = True
-            do_not_bet_reason = "NOT_GREEN_SIGNAL"
+            do_not_bet_reason = f"EV_TOO_LOW ({ev:.1%} < {min_ev:.1%})"
         
         now_ts = datetime.now(timezone.utc).isoformat()
-        
-        # Audit columns for observability
-        raw_edge_signed = pred_margin - cover_threshold  # With sign (positive=HOME, negative=AWAY)
         
         pick = {
             "id": str(uuid.uuid4()),
@@ -1445,15 +1440,21 @@ async def generate_picks(
             "commence_time_local": format_local_time(event['commence_time']),
             "pred_margin": round(pred_margin, 2),
             "open_spread": market_spread,
-            "open_price": open_price,
+            "open_price": round(open_price, 3),
             "open_ts": now_ts,
             "market_spread_used": market_spread,
             # Audit columns
             "cover_threshold": round(cover_threshold, 2),
             "raw_edge_signed": round(raw_edge_signed, 2),
-            "betting_edge": round(edge_points, 2),  # Always positive
-            "edge_points": round(edge_points, 2),  # Keep for backward compatibility
-            "signal": signal,
+            "betting_edge": round(edge_points, 2),
+            "edge_points": round(edge_points, 2),
+            # NEW: Probability and EV columns
+            "sigma": round(sigma, 2),
+            "p_cover": round(p_cover, 4),
+            "implied_prob": round(implied_prob, 4),
+            "ev": round(ev, 4),
+            "signal": signal_edge,  # Keep edge-based for backward compat
+            "signal_ev": signal_ev,  # New EV-based signal
             "confidence": matchup_data['confidence'],
             "recommended_side": recommended_side,
             "recommended_bet_string": recommended_bet_string,
@@ -1481,18 +1482,17 @@ async def generate_picks(
         if not do_not_bet:
             operative_picks.append(pick)
     
-    # Apply max_picks_per_day limit (only if configured)
-    max_picks = OPERATIONAL_CONFIG['operative_thresholds']['max_picks_per_day']
-    if operative_mode and max_picks is not None and len(operative_picks) > max_picks:
-        # Sort by edge (descending - higher edge first) and take top N
-        operative_picks.sort(key=lambda p: p['edge_points'], reverse=True)
-        operative_picks = operative_picks[:max_picks]
-    elif operative_mode:
-        # Sort by edge even without limit for better display
-        operative_picks.sort(key=lambda p: p['edge_points'], reverse=True)
+    # Sort by EV (descending) instead of edge
+    if operative_mode:
+        operative_picks.sort(key=lambda p: p['ev'], reverse=True)
+        
+        # Apply max_picks_per_day limit (only if configured)
+        max_picks = OPERATIONAL_CONFIG['operative_thresholds']['max_picks_per_day']
+        if max_picks is not None and len(operative_picks) > max_picks:
+            operative_picks = operative_picks[:max_picks]
     
     # Log stats
-    logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}")
+    logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}. Sigma: {sigma}")
     
     if operative_mode:
         return {
@@ -1501,13 +1501,16 @@ async def generate_picks(
             "count": len(operative_picks),
             "total_analyzed": len(picks),
             "operative_mode": True,
+            "sigma_used": sigma,
             "filters_applied": OPERATIONAL_CONFIG['operative_thresholds']
         }
     else:
         return {
             "picks": picks,
             "count": len(picks),
-            "operative_mode": False
+            "operative_mode": False,
+            "sigma_used": sigma
+        }
         }
 
 @api_router.get("/picks")
