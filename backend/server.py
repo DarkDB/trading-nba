@@ -36,7 +36,7 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 # ============= OPERATIONAL CONFIG (V1.0) =============
 OPERATIONAL_CONFIG = {
-    "version": "1.1",
+    "version": "2.0",
     "rolling_window_n": 15,
     "feature_list": ["diff_net_rating", "diff_pace", "diff_efg", "diff_tov_pct", 
                      "diff_orb_pct", "diff_ftr", "diff_rest", "home_advantage"],
@@ -47,11 +47,16 @@ OPERATIONAL_CONFIG = {
         "yellow": 2.0
     },
     "operative_thresholds": {
-        "min_edge": 3.5,
-        "max_picks_per_day": None,  # None = sin límite, muestra todos los válidos
+        "min_edge": 3.5,  # Legacy, kept for backward compatibility
+        "min_ev": 0.02,   # NEW: Minimum EV (2%) for valid pick
+        "max_picks_per_day": None,  # None = sin límite
         "require_high_confidence": True,
-        "require_green_signal": True,
+        "require_positive_ev": True,  # NEW: Use EV >= min_ev as main criterion
         "require_pinnacle": True
+    },
+    "calibration": {
+        "sigma_global": 12.0,  # Default, will be recomputed from historical data
+        "sigma_source": "default"  # "default" or "computed"
     },
     "train_seasons": ["2021-22", "2022-23", "2023-24"],
     "test_season": "2024-25",
