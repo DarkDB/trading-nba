@@ -321,6 +321,75 @@ def calculate_signal(edge_points: float) -> str:
         return "yellow"
     return "red"
 
+def calculate_signal_ev(ev: float) -> str:
+    """Calculate signal based on EV."""
+    if ev >= 0.05:  # 5%+ EV is very good
+        return "green"
+    elif ev >= 0.02:  # 2%+ EV is acceptable
+        return "yellow"
+    return "red"
+
+def normal_cdf(x: float) -> float:
+    """Standard normal CDF using math.erf"""
+    import math
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+def calculate_p_cover(pred_margin: float, cover_threshold: float, sigma: float, recommended_side: str) -> float:
+    """
+    Calculate probability of covering the spread using normal distribution.
+    
+    Args:
+        pred_margin: Model's predicted margin (home_pts - away_pts)
+        cover_threshold: The threshold to beat (-market_spread)
+        sigma: Standard deviation of prediction errors (from historical residuals)
+        recommended_side: "HOME" or "AWAY"
+    
+    Returns:
+        Probability of covering the spread (0 to 1)
+    """
+    if sigma <= 0:
+        sigma = 12.0  # Default fallback
+    
+    # z-score: how many sigmas away from threshold
+    z = (pred_margin - cover_threshold) / sigma
+    
+    if recommended_side == "HOME":
+        # HOME covers if actual_margin > cover_threshold
+        # P(actual > threshold) = P(Z > -z) = 1 - Phi(-z) = Phi(z)
+        # Actually: P(pred + error > threshold) = P(error > threshold - pred)
+        # = 1 - Phi((threshold - pred) / sigma) = Phi((pred - threshold) / sigma)
+        p_cover = normal_cdf(z)
+    else:  # AWAY
+        # AWAY covers if actual_margin < cover_threshold
+        # P(actual < threshold) = Phi((threshold - pred) / sigma)
+        p_cover = normal_cdf(-z)
+    
+    return round(p_cover, 4)
+
+def calculate_ev(p_cover: float, price_decimal: float) -> float:
+    """
+    Calculate Expected Value given probability and decimal odds.
+    
+    EV = p_cover * price - 1
+    
+    Where:
+    - p_cover: Our estimated probability of winning
+    - price: Decimal odds (e.g., 1.91)
+    - EV: Expected value per unit wagered
+    
+    Returns:
+        EV as decimal (e.g., 0.05 = 5% edge)
+    """
+    if price_decimal <= 1.0:
+        return -1.0  # Invalid odds
+    
+    ev = p_cover * price_decimal - 1.0
+    return round(ev, 4)
+
+def get_sigma_global() -> float:
+    """Get the global sigma from config or computed value."""
+    return OPERATIONAL_CONFIG["calibration"]["sigma_global"]
+
 def format_local_time(dt_str: str) -> str:
     """Convert to Europe/Madrid local time string"""
     try:
