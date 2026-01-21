@@ -1346,7 +1346,7 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     scaler = model_data['scaler']
     feature_cols = model_data['features']
     
-    # Get all historical games with market lines
+    # Get all historical games
     games = await db.games.find({}, {"_id": 0}).sort("game_date", 1).to_list(10000)
     
     if len(games) < min_games:
@@ -1367,6 +1367,7 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     
     # Collect calibration data points
     calibration_data = []
+    calibration_with_spread = []
     
     for game in games:
         game_date = game['game_date']
@@ -1379,31 +1380,134 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         if len(home_prev) < 5 or len(away_prev) < 5:
             continue
         
-        # Need historical market line for this game
-        # Try to get from predictions collection (if we made a prediction for this game)
+        # Check for historical spread data
+        market_spread = None
+        spread_source = None
+        
+        # Try predictions collection
         prediction = await db.predictions.find_one({
-            "home_team": {"$in": [home_abbr, get_team_full_name(home_abbr)]},
-            "away_team": {"$in": [away_abbr, get_team_full_name(away_abbr)]},
-            "game_date": {"$regex": game_date[:10]}  # Match date part
+            "home_abbr": home_abbr,
+            "away_abbr": away_abbr,
         }, {"_id": 0})
         
-        # If no prediction, try historical_lines collection
-        if not prediction:
-            hist_line = await db.historical_lines.find_one({
-                "home_team": {"$in": [home_abbr, get_team_full_name(home_abbr)]},
-                "game_date": {"$regex": game_date[:10]}
-            }, {"_id": 0})
-            if hist_line:
-                market_spread = hist_line.get('spread_point_home', 0)
-            else:
-                # Skip games without market data
-                continue
-        else:
-            market_spread = prediction.get('market_spread', 0)
+        if prediction and prediction.get('open_spread') is not None:
+            market_spread = prediction['open_spread']
+            spread_source = "predictions"
         
         # Calculate PRE-MATCH features
         home_stats = await calculate_team_stats_from_games(home_abbr, home_prev)
         away_stats = await calculate_team_stats_from_games(away_abbr, away_prev)
+        
+        if not home_stats or not away_stats:
+            continue
+        
+        home_rest = calculate_rest_days(game_date, home_prev)
+        away_rest = calculate_rest_days(game_date, away_prev)
+        
+        features = {
+            "diff_net_rating": home_stats['net_rating'] - away_stats['net_rating'],
+            "diff_pace": home_stats['pace'] - away_stats['pace'],
+            "diff_efg": home_stats['efg'] - away_stats['efg'],
+            "diff_tov_pct": home_stats['tov_pct'] - away_stats['tov_pct'],
+            "diff_orb_pct": home_stats['orb_pct'] - away_stats['orb_pct'],
+            "diff_ftr": home_stats['ftr'] - away_stats['ftr'],
+            "diff_rest": home_rest - away_rest,
+            "home_advantage": 1
+        }
+        
+        X = np.array([[features.get(col, 0) for col in feature_cols]])
+        
+        try:
+            X_scaled = scaler.transform(X)
+            pred_margin = float(model.predict(X_scaled)[0])
+        except Exception:
+            continue
+        
+        actual_margin = game.get('home_pts', 0) - game.get('away_pts', 0)
+        
+        # Store basic calibration data (without spread)
+        calibration_data.append({
+            "game_id": game.get('game_id'),
+            "season": game.get('season', 'unknown'),
+            "pred_margin": round(pred_margin, 2),
+            "actual_margin": actual_margin,
+            "residual": round(actual_margin - pred_margin, 2)
+        })
+        
+        # If we have spread data, store for beta estimation
+        if market_spread is not None:
+            cover_threshold = -market_spread
+            model_edge = pred_margin - cover_threshold
+            residual_vs_market = actual_margin - cover_threshold
+            
+            calibration_with_spread.append({
+                "game_id": game.get('game_id'),
+                "pred_margin": round(pred_margin, 2),
+                "actual_margin": actual_margin,
+                "market_spread": market_spread,
+                "model_edge": round(model_edge, 2),
+                "residual_vs_market": round(residual_vs_market, 2),
+                "spread_source": spread_source
+            })
+    
+    n_total = len(calibration_data)
+    n_with_spread = len(calibration_with_spread)
+    
+    if n_total < 50:
+        return {
+            "status": "insufficient_data",
+            "warning": f"Only {n_total} valid samples for calibration",
+            "flags": ["INSUFFICIENT_DATA"]
+        }
+    
+    # Calculate sigma_residual from all games (model prediction error)
+    residuals = np.array([d['residual'] for d in calibration_data])
+    sigma_from_model = float(np.std(residuals))
+    mean_residual_model = float(np.mean(residuals))
+    
+    # Determine beta and alpha
+    if n_with_spread >= 30:
+        # Enough data to estimate beta via regression
+        X_calib = np.array([d['model_edge'] for d in calibration_with_spread])
+        Y_calib = np.array([d['residual_vs_market'] for d in calibration_with_spread])
+        
+        # Check for sufficient variance in X
+        if np.std(X_calib) > 0.5:
+            slope, intercept, r_value, p_value, std_err = scipy_stats.linregress(X_calib, Y_calib)
+            beta = float(slope)
+            alpha = float(intercept)
+            r_squared = float(r_value ** 2)
+            beta_source = "regression"
+            
+            # Recalculate sigma_residual from regression residuals
+            Y_pred = alpha + beta * X_calib
+            regression_residuals = Y_calib - Y_pred
+            sigma_residual = float(np.std(regression_residuals))
+        else:
+            # Not enough variance, use defaults
+            beta = 0.4  # Conservative shrinkage
+            alpha = 0.0
+            r_squared = 0.0
+            p_value = 1.0
+            std_err = 0.0
+            sigma_residual = sigma_from_model
+            beta_source = "default_low_variance"
+    else:
+        # Not enough spread data - use empirically-derived defaults
+        # Research suggests beta ≈ 0.3-0.5 for NBA point spread models
+        beta = 0.4  # Conservative: model edge is only 40% predictive
+        alpha = 0.0  # Assume no systematic bias
+        r_squared = 0.0
+        p_value = 1.0
+        std_err = 0.0
+        sigma_residual = sigma_from_model
+        beta_source = f"default_insufficient_spread_data (n={n_with_spread})"
+    
+    # Update OPERATIONAL_CONFIG
+    OPERATIONAL_CONFIG["calibration"]["alpha"] = round(alpha, 4)
+    OPERATIONAL_CONFIG["calibration"]["beta"] = round(beta, 4)
+    OPERATIONAL_CONFIG["calibration"]["sigma_residual"] = round(sigma_residual, 2)
+    OPERATIONAL_CONFIG["calibration"]["calibration_source"] = "computed_vs_market"
         
         if not home_stats or not away_stats:
             continue
