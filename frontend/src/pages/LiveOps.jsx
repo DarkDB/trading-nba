@@ -323,23 +323,6 @@ export default function LiveOps() {
           </CardContent>
         </Card>
       )}
-                <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
-                <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">Sin límite de picks</Badge>
-              </div>
-              <Button
-                onClick={loadAuditReport}
-                disabled={syncing.audit}
-                variant="outline"
-                size="sm"
-                className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10"
-              >
-                {syncing.audit ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <BarChart3 className="w-4 h-4 mr-2" />}
-                Model Audit
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Model Audit Report */}
       {showAudit && auditReport && (
