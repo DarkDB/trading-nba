@@ -2085,7 +2085,7 @@ async def export_history(user=Depends(get_current_user)):
 async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     """
     Generate a comprehensive sanity report for model predictions.
-    Includes: pred_margin stats, p_cover stats, EV stats, and top 10 by EV.
+    Uses VS_MARKET calibration (alpha, beta, sigma_residual) for p_cover and EV.
     """
     import numpy as np
     import joblib
@@ -2107,10 +2107,23 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     scaler = model_data['scaler']
     feature_cols = model_data['features']
     
-    # Get sigma
+    # Get VS_MARKET calibration (preferred) or fall back to legacy sigma
+    vs_market_doc = await db.model_calibration.find_one({"key": "vs_market"}, {"_id": 0})
     sigma_doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
-    sigma = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
-    sigma_source = sigma_doc.get('sigma_source', 'default') if sigma_doc else 'default'
+    
+    if vs_market_doc:
+        calibration_type = "vs_market"
+        alpha = vs_market_doc.get('alpha', 0.0)
+        beta = vs_market_doc.get('beta', 1.0)
+        sigma_residual = vs_market_doc.get('sigma_residual', 15.0)
+        calibration_source = vs_market_doc.get('calibration_source', 'computed_vs_market')
+    else:
+        # Fallback to legacy sigma approach with default beta=1, alpha=0
+        calibration_type = "legacy_sigma"
+        alpha = 0.0
+        beta = 1.0  # No shrinkage
+        sigma_residual = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
+        calibration_source = sigma_doc.get('sigma_source', 'default') if sigma_doc else 'default'
     
     # Analyze predictions
     analysis_data = []
@@ -2135,8 +2148,10 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
         
         market_spread = ref_line['spread_point_home']
         cover_threshold = -market_spread
-        raw_edge_signed = pred_margin - cover_threshold
-        betting_edge = abs(raw_edge_signed)
+        
+        # model_edge = pred_margin - cover_threshold (raw edge vs market)
+        model_edge = pred_margin - cover_threshold
+        betting_edge = abs(model_edge)
         
         # Determine side
         if pred_margin > cover_threshold:
@@ -2146,11 +2161,17 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
             recommended_side = "AWAY"
             open_price = ref_line['price_away_decimal']
         
-        # Calculate z-score, p_cover, implied_prob, EV
-        z = raw_edge_signed / sigma
-        p_cover = calculate_p_cover(pred_margin, cover_threshold, sigma, recommended_side)
+        # Calculate p_cover using VS_MARKET calibration
+        # mu = beta * model_edge + alpha
+        # z = mu / sigma_residual
+        # p_cover = Phi(z) for HOME, Phi(-z) for AWAY
+        p_cover, z = calculate_p_cover_vs_market(model_edge, alpha, beta, sigma_residual, recommended_side)
+        
         implied_prob = 1.0 / open_price if open_price > 1.0 else 0.5
         ev = calculate_ev(p_cover, open_price)
+        
+        # Adjusted expected edge after shrinkage
+        adjusted_edge = beta * model_edge + alpha
         
         # Feature contributions
         contributions = {}
@@ -2163,10 +2184,9 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
             "pred_margin": round(pred_margin, 2),
             "market_spread": market_spread,
             "cover_threshold": round(cover_threshold, 2),
-            "raw_edge_signed": round(raw_edge_signed, 2),
-            "betting_edge": round(betting_edge, 2),
-            "z": round(z, 3),
-            "sigma": round(sigma, 2),
+            "model_edge": round(model_edge, 2),
+            "adjusted_edge": round(adjusted_edge, 2),
+            "z": round(z, 4),
             "recommended_side": recommended_side,
             "open_price": round(open_price, 3),
             "implied_prob": round(implied_prob, 4),
@@ -2181,22 +2201,38 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     
     # Extract arrays for statistics
     pred_margins = [d['pred_margin'] for d in analysis_data]
+    model_edges = [d['model_edge'] for d in analysis_data]
+    adjusted_edges = [d['adjusted_edge'] for d in analysis_data]
     p_covers = [d['p_cover'] for d in analysis_data]
     evs = [d['ev'] for d in analysis_data]
-    betting_edges = [d['betting_edge'] for d in analysis_data]
     n_samples = len(pred_margins)
     
     # Calculate comprehensive statistics
     stats = {
         "n_samples": n_samples,
-        "sigma_used": sigma,
-        "sigma_source": sigma_source,
+        "calibration_type": calibration_type,
+        "calibration_source": calibration_source,
+        "alpha": round(alpha, 4),
+        "beta": round(beta, 4),
+        "sigma_residual": round(sigma_residual, 2),
         "pred_margin": {
             "mean": round(np.mean(pred_margins), 2),
             "std": round(np.std(pred_margins), 2),
             "min": round(np.min(pred_margins), 2),
             "max": round(np.max(pred_margins), 2),
             "mean_abs": round(np.mean(np.abs(pred_margins)), 2),
+        },
+        "model_edge": {
+            "mean": round(np.mean(model_edges), 2),
+            "std": round(np.std(model_edges), 2),
+            "min": round(np.min(model_edges), 2),
+            "max": round(np.max(model_edges), 2),
+        },
+        "adjusted_edge": {
+            "mean": round(np.mean(adjusted_edges), 2),
+            "std": round(np.std(adjusted_edges), 2),
+            "min": round(np.min(adjusted_edges), 2),
+            "max": round(np.max(adjusted_edges), 2),
         },
         "p_cover": {
             "mean": round(np.mean(p_covers), 4),
@@ -2211,27 +2247,57 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
             "max": round(np.max(evs), 4),
         },
         "distributions": {
+            "pct_p_cover_gt_55": round(100 * sum(1 for p in p_covers if p > 0.55) / n_samples, 1),
             "pct_p_cover_gt_60": round(100 * sum(1 for p in p_covers if p > 0.60) / n_samples, 1),
             "pct_p_cover_gt_65": round(100 * sum(1 for p in p_covers if p > 0.65) / n_samples, 1),
             "pct_p_cover_gt_70": round(100 * sum(1 for p in p_covers if p > 0.70) / n_samples, 1),
+            "pct_ev_positive": round(100 * sum(1 for e in evs if e > 0) / n_samples, 1),
             "pct_ev_gte_2pct": round(100 * sum(1 for e in evs if e >= 0.02) / n_samples, 1),
             "pct_ev_gte_5pct": round(100 * sum(1 for e in evs if e >= 0.05) / n_samples, 1),
-            "pct_ev_gte_8pct": round(100 * sum(1 for e in evs if e >= 0.08) / n_samples, 1),
-            "pct_abs_pred_margin_gt_10": round(100 * sum(1 for p in pred_margins if abs(p) > 10) / n_samples, 1),
-            "pct_abs_pred_margin_gt_15": round(100 * sum(1 for p in pred_margins if abs(p) > 15) / n_samples, 1),
+            "pct_abs_model_edge_gt_5": round(100 * sum(1 for e in model_edges if abs(e) > 5) / n_samples, 1),
+            "pct_abs_model_edge_gt_10": round(100 * sum(1 for e in model_edges if abs(e) > 10) / n_samples, 1),
         }
     }
     
-    # Flags
+    # Flags based on acceptance criteria
     flags = []
-    if stats["distributions"]["pct_abs_pred_margin_gt_15"] > 25:
-        flags.append("POSSIBLE_SCALE_ISSUE")
-    if stats["distributions"]["pct_p_cover_gt_70"] > 30:
-        flags.append("UNUSUALLY_HIGH_P_COVER")
-    if stats["ev"]["mean"] > 0.10:
-        flags.append("UNUSUALLY_HIGH_MEAN_EV")
-    if sigma_source == "default":
-        flags.append("USING_DEFAULT_SIGMA")
+    
+    # Check acceptance criteria
+    mean_p_cover = stats["p_cover"]["mean"]
+    mean_ev = stats["ev"]["mean"]
+    pct_p_cover_gt_60 = stats["distributions"]["pct_p_cover_gt_60"]
+    
+    # Acceptance: mean(p_cover) ∈ [0.52, 0.56]
+    if mean_p_cover < 0.52:
+        flags.append(f"MEAN_P_COVER_TOO_LOW ({mean_p_cover:.4f} < 0.52)")
+    elif mean_p_cover > 0.56:
+        flags.append(f"MEAN_P_COVER_TOO_HIGH ({mean_p_cover:.4f} > 0.56)")
+    else:
+        flags.append(f"MEAN_P_COVER_OK ({mean_p_cover:.4f} in [0.52, 0.56])")
+    
+    # Acceptance: mean(EV) ∈ [-2%, +5%]
+    if mean_ev < -0.02:
+        flags.append(f"MEAN_EV_TOO_LOW ({mean_ev:.4f} < -0.02)")
+    elif mean_ev > 0.05:
+        flags.append(f"MEAN_EV_TOO_HIGH ({mean_ev:.4f} > 0.05)")
+    else:
+        flags.append(f"MEAN_EV_OK ({mean_ev:.4f} in [-0.02, 0.05])")
+    
+    # Acceptance: % picks with p_cover > 60% < 20%
+    if pct_p_cover_gt_60 > 20:
+        flags.append(f"TOO_MANY_HIGH_P_COVER ({pct_p_cover_gt_60:.1f}% > 20%)")
+    else:
+        flags.append(f"HIGH_P_COVER_OK ({pct_p_cover_gt_60:.1f}% <= 20%)")
+    
+    # Calibration warnings
+    if calibration_type == "legacy_sigma":
+        flags.append("USING_LEGACY_SIGMA (run /admin/model/calibrate-vs-market)")
+    if calibration_source == "default":
+        flags.append("USING_DEFAULT_CALIBRATION")
+    
+    # Count passing criteria
+    criteria_passed = sum(1 for f in flags if "_OK" in f)
+    criteria_total = 3
     
     # Top 10 by EV
     sorted_by_ev = sorted(analysis_data, key=lambda x: x['ev'], reverse=True)
@@ -2240,8 +2306,13 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     # Model info
     model_info = {
         "model_version": model_doc.get('model_version'),
-        "sigma": sigma,
-        "sigma_source": sigma_source,
+        "calibration": {
+            "type": calibration_type,
+            "alpha": round(alpha, 4),
+            "beta": round(beta, 4),
+            "sigma_residual": round(sigma_residual, 2),
+            "source": calibration_source
+        },
         "intercept": round(float(model.intercept_), 4),
         "coefficients": {col: round(float(coef), 4) for col, coef in zip(feature_cols, model.coef_)},
         "mae": model_doc.get('metrics', {}).get('mae'),
@@ -2249,10 +2320,16 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     }
     
     return {
-        "report_type": "MODEL_SANITY_AUDIT_V2",
+        "report_type": "MODEL_SANITY_AUDIT_V3_VS_MARKET",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_info": model_info,
         "statistics": stats,
+        "acceptance_criteria": {
+            "mean_p_cover_range": "[0.52, 0.56]",
+            "mean_ev_range": "[-0.02, 0.05]",
+            "max_pct_p_cover_gt_60": "20%",
+            "criteria_passed": f"{criteria_passed}/{criteria_total}"
+        },
         "flags": flags,
         "flag_count": len(flags),
         "top_10_by_ev": top_10_by_ev,
