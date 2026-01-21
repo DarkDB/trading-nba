@@ -1747,8 +1747,8 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
         if not ref_line:
             continue
         
-        home_abbr = NBA_ODDS_TO_STATS_MAPPING.get(event['home_team'], event['home_team'][:3].upper())
-        away_abbr = NBA_ODDS_TO_STATS_MAPPING.get(event['away_team'], event['away_team'][:3].upper())
+        home_abbr = TEAM_NAME_TO_ABBR.get(event['home_team'], event['home_team'][:3].upper())
+        away_abbr = TEAM_NAME_TO_ABBR.get(event['away_team'], event['away_team'][:3].upper())
         
         matchup_data = await build_matchup_features_for_prediction(home_abbr, away_abbr)
         if not matchup_data:
