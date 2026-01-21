@@ -1794,7 +1794,7 @@ async def generate_picks(
     operative_mode: bool = Query(True, description="Apply operative filters"),
     user=Depends(get_current_user)
 ):
-    """Generate picks with probability and EV calculations"""
+    """Generate picks with VS_MARKET calibration for probability and EV calculations"""
     import numpy as np
     
     model_data = await get_active_model()
@@ -1807,9 +1807,21 @@ async def generate_picks(
     model_version = model_data['model_version']
     model_id = model_data['model_id']
     
-    # Get sigma from calibration
+    # Get VS_MARKET calibration (preferred) or fall back to legacy sigma
+    vs_market_doc = await db.model_calibration.find_one({"key": "vs_market"}, {"_id": 0})
     sigma_doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
-    sigma = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
+    
+    if vs_market_doc:
+        calibration_type = "vs_market"
+        alpha = vs_market_doc.get('alpha', 0.0)
+        beta = vs_market_doc.get('beta', 1.0)
+        sigma_residual = vs_market_doc.get('sigma_residual', 15.0)
+    else:
+        # Fallback to legacy sigma approach with default beta=1, alpha=0
+        calibration_type = "legacy_sigma"
+        alpha = 0.0
+        beta = 1.0
+        sigma_residual = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
     
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(50)
     
@@ -1842,32 +1854,36 @@ async def generate_picks(
         # Cover threshold calculation
         cover_threshold = -market_spread
         
+        # model_edge = pred_margin - cover_threshold (raw edge vs market)
+        model_edge = pred_margin - cover_threshold
+        
         home_covers = pred_margin > cover_threshold
         away_covers = pred_margin < cover_threshold
         
         if home_covers:
             recommended_side = "HOME"
-            edge_points = pred_margin - cover_threshold
+            edge_points = model_edge
             open_price = ref_line['price_home_decimal']
         elif away_covers:
             recommended_side = "AWAY"
-            edge_points = cover_threshold - pred_margin
+            edge_points = abs(model_edge)
             open_price = ref_line['price_away_decimal']
         else:
             recommended_side = "HOME"
             edge_points = 0.0
             open_price = ref_line['price_home_decimal']
         
-        # Calculate probability and EV
-        p_cover = calculate_p_cover(pred_margin, cover_threshold, sigma, recommended_side)
+        # Calculate probability and EV using VS_MARKET calibration
+        p_cover, z = calculate_p_cover_vs_market(model_edge, alpha, beta, sigma_residual, recommended_side)
         implied_prob = 1.0 / open_price if open_price > 1.0 else 0.5
         ev = calculate_ev(p_cover, open_price)
+        
+        # Adjusted edge after shrinkage
+        adjusted_edge = beta * model_edge + alpha
         
         # Signal based on EV (new system)
         signal_ev = calculate_signal_ev(ev)
         signal_edge = calculate_signal(edge_points)  # Keep for backward compat
-        
-        raw_edge_signed = pred_margin - cover_threshold
         
         recommended_bet_string = generate_recommended_bet_string(
             event['home_team'], event['away_team'], home_abbr, away_abbr,
@@ -1914,11 +1930,17 @@ async def generate_picks(
             "market_spread_used": market_spread,
             # Audit columns
             "cover_threshold": round(cover_threshold, 2),
-            "raw_edge_signed": round(raw_edge_signed, 2),
+            "model_edge": round(model_edge, 2),
+            "adjusted_edge": round(adjusted_edge, 2),
             "betting_edge": round(edge_points, 2),
             "edge_points": round(edge_points, 2),
-            # NEW: Probability and EV columns
-            "sigma": round(sigma, 2),
+            # Calibration info
+            "calibration_type": calibration_type,
+            "alpha": round(alpha, 4),
+            "beta": round(beta, 4),
+            "sigma_residual": round(sigma_residual, 2),
+            "z": round(z, 4),
+            # Probability and EV columns
             "p_cover": round(p_cover, 4),
             "implied_prob": round(implied_prob, 4),
             "ev": round(ev, 4),
@@ -1961,7 +1983,7 @@ async def generate_picks(
             operative_picks = operative_picks[:max_picks]
     
     # Log stats
-    logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}. Sigma: {sigma}")
+    logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}. Calibration: {calibration_type}, beta={beta:.3f}")
     
     if operative_mode:
         return {
@@ -1970,7 +1992,12 @@ async def generate_picks(
             "count": len(operative_picks),
             "total_analyzed": len(picks),
             "operative_mode": True,
-            "sigma_used": sigma,
+            "calibration": {
+                "type": calibration_type,
+                "alpha": alpha,
+                "beta": beta,
+                "sigma_residual": sigma_residual
+            },
             "filters_applied": OPERATIONAL_CONFIG['operative_thresholds']
         }
     else:
@@ -1978,7 +2005,12 @@ async def generate_picks(
             "picks": picks,
             "count": len(picks),
             "operative_mode": False,
-            "sigma_used": sigma
+            "calibration": {
+                "type": calibration_type,
+                "alpha": alpha,
+                "beta": beta,
+                "sigma_residual": sigma_residual
+            }
         }
 
 @api_router.get("/picks")
