@@ -336,35 +336,72 @@ def normal_cdf(x: float) -> float:
 
 def calculate_p_cover(pred_margin: float, cover_threshold: float, sigma: float, recommended_side: str) -> float:
     """
-    Calculate probability of covering the spread using normal distribution.
+    DEPRECATED: Old approach that modeled margin as N(pred_margin, sigma).
+    Use calculate_p_cover_vs_market instead.
+    """
+    if sigma <= 0:
+        sigma = 12.0
+    z = (pred_margin - cover_threshold) / sigma
+    if recommended_side == "HOME":
+        p_cover = normal_cdf(z)
+    else:
+        p_cover = normal_cdf(-z)
+    return round(p_cover, 4)
+
+
+def calculate_p_cover_vs_market(
+    model_edge: float, 
+    alpha: float, 
+    beta: float, 
+    sigma_residual: float,
+    recommended_side: str
+) -> tuple[float, float]:
+    """
+    Calculate probability of covering using the MODEL VS MARKET approach.
+    
+    This models how the model's edge translates to actual outcomes:
+    residual_real ~ N(beta * model_edge + alpha, sigma_residual)
+    
+    Where:
+    - model_edge = pred_margin - cover_threshold (model's raw edge vs market)
+    - beta: shrinkage factor (expected < 1, indicating overconfidence)
+    - alpha: systematic bias
+    - sigma_residual: uncertainty in residuals vs market
+    
+    For HOME cover: actual_margin > cover_threshold
+    Equivalent to: residual_real > 0
+    P(residual_real > 0) = P(Z > -mu/sigma) = Phi(mu/sigma)
+    where mu = beta * model_edge + alpha
     
     Args:
-        pred_margin: Model's predicted margin (home_pts - away_pts)
-        cover_threshold: The threshold to beat (-market_spread)
-        sigma: Standard deviation of prediction errors (from historical residuals)
+        model_edge: pred_margin - cover_threshold
+        alpha: calibrated intercept
+        beta: calibrated slope (shrinkage)
+        sigma_residual: calibrated std of residuals vs market
         recommended_side: "HOME" or "AWAY"
     
     Returns:
-        Probability of covering the spread (0 to 1)
+        (p_cover, z_score)
     """
-    if sigma <= 0:
-        sigma = 12.0  # Default fallback
+    if sigma_residual <= 0:
+        sigma_residual = 12.0
     
-    # z-score: how many sigmas away from threshold
-    z = (pred_margin - cover_threshold) / sigma
+    # Expected value of residual vs market
+    mu = beta * model_edge + alpha
+    
+    # z-score: how many sigmas away from 0 (the cover threshold in residual space)
+    z = mu / sigma_residual
     
     if recommended_side == "HOME":
-        # HOME covers if actual_margin > cover_threshold
-        # P(actual > threshold) = P(Z > -z) = 1 - Phi(-z) = Phi(z)
-        # Actually: P(pred + error > threshold) = P(error > threshold - pred)
-        # = 1 - Phi((threshold - pred) / sigma) = Phi((pred - threshold) / sigma)
+        # HOME covers if residual_real > 0
+        # P(residual_real > 0) = Phi(mu / sigma_residual)
         p_cover = normal_cdf(z)
-    else:  # AWAY
-        # AWAY covers if actual_margin < cover_threshold
-        # P(actual < threshold) = Phi((threshold - pred) / sigma)
+    else:
+        # AWAY covers if residual_real < 0
+        # P(residual_real < 0) = Phi(-mu / sigma_residual) = 1 - Phi(z)
         p_cover = normal_cdf(-z)
     
-    return round(p_cover, 4)
+    return round(p_cover, 4), round(z, 4)
 
 def calculate_ev(p_cover: float, price_decimal: float) -> float:
     """
