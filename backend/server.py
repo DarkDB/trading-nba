@@ -1511,7 +1511,6 @@ async def generate_picks(
             "operative_mode": False,
             "sigma_used": sigma
         }
-        }
 
 @api_router.get("/picks")
 async def get_picks(user=Depends(get_current_user)):
