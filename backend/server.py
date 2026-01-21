@@ -1743,7 +1743,7 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     
     for event in events:
         lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
-        ref_line = get_reference_line(lines)
+        ref_line = select_reference_line(lines, require_pinnacle=True)
         if not ref_line:
             continue
         
