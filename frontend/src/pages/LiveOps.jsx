@@ -519,7 +519,7 @@ export default function LiveOps() {
             All Valid Picks ({operativePicks.length})
           </CardTitle>
           <CardDescription className="text-zinc-400">
-            Picks que cumplen: Pinnacle + HIGH confidence + cover_side válido + edge ≥ 3.5 (GREEN)
+            Picks con EV ≥ 2% + HIGH confidence + Pinnacle. Ordenados por EV descendente.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -529,64 +529,66 @@ export default function LiveOps() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-zinc-700">
-                    <th className="text-left text-xs text-zinc-400 p-3 uppercase tracking-wider">Partido</th>
-                    <th className="text-left text-xs text-zinc-400 p-3 uppercase tracking-wider">Hora</th>
-                    <th className="text-center text-xs text-zinc-400 p-3 uppercase tracking-wider">Apuesta</th>
-                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Pred</th>
-                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Spread</th>
-                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Threshold</th>
-                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Raw Edge</th>
-                    <th className="text-right text-xs text-zinc-400 p-3 uppercase tracking-wider">Bet Edge</th>
-                    <th className="text-center text-xs text-zinc-400 p-3 uppercase tracking-wider">Conf</th>
+                    <th className="text-left text-xs text-zinc-400 p-2 uppercase tracking-wider">Partido</th>
+                    <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Apuesta</th>
+                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Price</th>
+                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Impl%</th>
+                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">p_cover</th>
+                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider font-bold text-green-400">EV%</th>
+                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Pred</th>
+                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Thresh</th>
+                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">σ</th>
                   </tr>
                 </thead>
                 <tbody>
                   {operativePicks.map((pick, idx) => {
-                    // Calculate audit columns if not present
                     const spread = pick.open_spread || 0;
                     const coverThreshold = pick.cover_threshold ?? -spread;
-                    const rawEdge = pick.raw_edge_signed ?? (pick.pred_margin - coverThreshold);
-                    const bettingEdge = pick.betting_edge ?? pick.edge_points ?? Math.abs(rawEdge);
+                    const pCover = pick.p_cover ?? 0.5;
+                    const impliedProb = pick.implied_prob ?? (1 / (pick.open_price || 1.91));
+                    const ev = pick.ev ?? 0;
+                    const sigma = pick.sigma ?? 12;
                     
                     return (
-                      <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/5' : ''}`}>
-                        <td className="p-3">
+                      <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/10' : ''}`}>
+                        <td className="p-2">
                           <div className="flex flex-col">
-                            <span className="text-white font-medium">{pick.home_team}</span>
-                            <span className="text-zinc-400 text-sm">vs {pick.away_team}</span>
+                            <span className="text-white font-medium text-xs">{pick.home_team?.slice(0, 18)}</span>
+                            <span className="text-zinc-500 text-xs">vs {pick.away_team?.slice(0, 18)}</span>
                           </div>
                         </td>
-                        <td className="p-3 text-sm text-zinc-400 whitespace-nowrap">{pick.commence_time_local}</td>
-                        <td className="p-3 text-center">
-                          <Badge className="bg-primary/20 text-primary border-primary/50 font-data font-bold text-sm px-3">
+                        <td className="p-2 text-center">
+                          <Badge className="bg-primary/20 text-primary border-primary/50 font-data font-bold text-xs px-2">
                             {pick.recommended_bet_string}
                           </Badge>
                         </td>
-                        <td className={`p-3 text-right font-data ${Math.abs(pick.pred_margin) > 15 ? 'text-red-400' : 'text-white'}`}>
-                          {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(2)}
+                        <td className="p-2 text-right font-data text-white">
+                          {pick.open_price?.toFixed(2)}
                         </td>
-                        <td className="p-3 text-right font-data text-blue-400">
-                          {spread > 0 ? '+' : ''}{spread?.toFixed(1)}
+                        <td className="p-2 text-right font-data text-zinc-400">
+                          {(impliedProb * 100).toFixed(1)}%
                         </td>
-                        <td className="p-3 text-right font-data text-zinc-400">
+                        <td className={`p-2 text-right font-data ${pCover > impliedProb ? 'text-green-400' : 'text-zinc-400'}`}>
+                          {(pCover * 100).toFixed(1)}%
+                        </td>
+                        <td className={`p-2 text-right font-data font-bold ${ev >= 0.05 ? 'text-green-400' : ev >= 0.02 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {ev >= 0 ? '+' : ''}{(ev * 100).toFixed(1)}%
+                        </td>
+                        <td className={`p-2 text-right font-data ${Math.abs(pick.pred_margin) > 15 ? 'text-red-400' : 'text-white'}`}>
+                          {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(1)}
+                        </td>
+                        <td className="p-2 text-right font-data text-zinc-500">
                           {coverThreshold > 0 ? '+' : ''}{coverThreshold?.toFixed(1)}
                         </td>
-                        <td className="p-3 text-right font-data text-yellow-400">
-                          {rawEdge > 0 ? '+' : ''}{rawEdge?.toFixed(2)}
+                        <td className="p-2 text-right font-data text-blue-400">
+                          {sigma?.toFixed(1)}
                         </td>
-                        <td className={`p-3 text-right font-data font-bold ${bettingEdge > 10 ? 'text-red-400' : 'text-green-400'}`}>
-                          +{bettingEdge?.toFixed(2)}
-                        </td>
-                      <td className="p-3 text-center">
-                        <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">
-                          HIGH
-                        </Badge>
-                      </td>
-                    </tr>
-                  ))}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
