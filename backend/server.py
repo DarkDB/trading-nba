@@ -1578,8 +1578,9 @@ async def export_history(user=Depends(get_current_user)):
     writer = csv.DictWriter(output, fieldnames=[
         "created_at", "home_team", "away_team", "commence_time", "pred_margin",
         "open_spread", "cover_threshold", "raw_edge_signed", "betting_edge",
-        "open_price", "close_spread", "close_price", "clv_spread",
-        "signal", "recommended_side", "recommended_bet_string",
+        "open_price", "sigma", "p_cover", "implied_prob", "ev",
+        "close_spread", "close_price", "clv_spread",
+        "signal", "signal_ev", "recommended_side", "recommended_bet_string",
         "actual_margin", "covered", "confidence", "model_version"
     ])
     writer.writeheader()
@@ -1599,9 +1600,15 @@ async def export_history(user=Depends(get_current_user)):
             "cover_threshold": p.get('cover_threshold', cover_threshold),
             "raw_edge_signed": p.get('raw_edge_signed', round(raw_edge_signed, 2)),
             "betting_edge": betting_edge,
-            "open_price": p.get('open_price'), "close_spread": p.get('close_spread'),
+            "open_price": p.get('open_price'),
+            "sigma": p.get('sigma', 12.0),
+            "p_cover": p.get('p_cover'),
+            "implied_prob": p.get('implied_prob'),
+            "ev": p.get('ev'),
+            "close_spread": p.get('close_spread'),
             "close_price": p.get('close_price'), "clv_spread": p.get('clv_spread'),
             "signal": p.get('signal'),
+            "signal_ev": p.get('signal_ev'),
             "recommended_side": p.get('recommended_side'),
             "recommended_bet_string": p.get('recommended_bet_string'),
             "actual_margin": p.get('actual_margin'), "covered": p.get('covered'),
