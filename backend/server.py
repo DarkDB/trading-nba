@@ -1571,23 +1571,6 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         "flags": flags,
         "computed_at": datetime.now(timezone.utc).isoformat()
     }
-        "n_samples": n_samples,
-        "n_with_real_spread": sum(1 for d in calibration_data if not d.get('synthetic_spread')),
-        "interpretation": {
-            "beta_meaning": "Shrinkage factor: how much the model's edge translates to actual edge",
-            "beta_value": f"beta={beta:.3f} means model's edge is {'overconfident' if beta < 1 else 'underconfident'}",
-            "alpha_meaning": "Systematic bias vs market",
-            "sigma_meaning": "Uncertainty in model vs market residuals"
-        },
-        "model_edge_stats": {
-            "mean": round(float(np.mean(X_calib)), 2),
-            "std": round(float(np.std(X_calib)), 2),
-            "min": round(float(np.min(X_calib)), 2),
-            "max": round(float(np.max(X_calib)), 2)
-        },
-        "flags": flags,
-        "computed_at": datetime.now(timezone.utc).isoformat()
-    }
 
 
 @api_router.get("/admin/model/calibration")
