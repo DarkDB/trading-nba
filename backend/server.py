@@ -1495,7 +1495,8 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     else:
         # Not enough spread data - use empirically-derived defaults
         # Research suggests beta ≈ 0.3-0.5 for NBA point spread models
-        beta = 0.4  # Conservative: model edge is only 40% predictive
+        # Using 0.35 for conservative estimate (model edge is 35% predictive)
+        beta = 0.35
         alpha = 0.0  # Assume no systematic bias
         r_squared = 0.0
         p_value = 1.0
