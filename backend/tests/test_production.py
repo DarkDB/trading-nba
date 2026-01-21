@@ -607,6 +607,7 @@ if __name__ == "__main__":
         ("test_ev_sign", test_ev_sign),
         ("test_sigma_reasonable_range", test_sigma_reasonable_range),
         ("test_p_cover_boundary_cases", test_p_cover_boundary_cases),
+        ("test_monotonicity_by_side", test_monotonicity_by_side),
         ("test_metrics_structure", test_metrics_structure),
     ]
     
