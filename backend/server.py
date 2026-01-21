@@ -1651,7 +1651,7 @@ async def export_history(user=Depends(get_current_user)):
     writer = csv.DictWriter(output, fieldnames=[
         "created_at", "home_team", "away_team", "commence_time", "pred_margin",
         "open_spread", "cover_threshold", "raw_edge_signed", "betting_edge",
-        "open_price", "sigma", "p_cover", "implied_prob", "ev",
+        "open_price", "sigma", "z", "p_cover", "implied_prob", "ev",
         "close_spread", "close_price", "clv_spread",
         "signal", "signal_ev", "recommended_side", "recommended_bet_string",
         "actual_margin", "covered", "confidence", "model_version"
@@ -1665,6 +1665,8 @@ async def export_history(user=Depends(get_current_user)):
         pred_margin = p.get('pred_margin', 0)
         raw_edge_signed = pred_margin - cover_threshold
         betting_edge = p.get('betting_edge') or p.get('edge_points', 0)
+        sigma = p.get('sigma', 12.0)
+        z = raw_edge_signed / sigma if sigma > 0 else 0
         
         writer.writerow({
             "created_at": p.get('created_at'), "home_team": p.get('home_team'),
@@ -1674,7 +1676,8 @@ async def export_history(user=Depends(get_current_user)):
             "raw_edge_signed": p.get('raw_edge_signed', round(raw_edge_signed, 2)),
             "betting_edge": betting_edge,
             "open_price": p.get('open_price'),
-            "sigma": p.get('sigma', 12.0),
+            "sigma": sigma,
+            "z": round(z, 3),
             "p_cover": p.get('p_cover'),
             "implied_prob": p.get('implied_prob'),
             "ev": p.get('ev'),
