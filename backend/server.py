@@ -1204,6 +1204,7 @@ async def recompute_sigma(season: str = None, min_games: int = 100, user=Depends
         {"key": "sigma"},
         {"$set": {
             "sigma_global": round(sigma_global, 2),
+            "sigma_source": "computed",  # Mark as computed from historical data
             "mean_residual": round(mean_residual, 2),
             "sigma_by_season": sigma_by_season,
             "n_samples": len(residuals),
