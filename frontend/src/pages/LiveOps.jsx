@@ -537,7 +537,8 @@ export default function LiveOps() {
                     const pCover = pick.p_cover ?? 0.5;
                     const impliedProb = pick.implied_prob ?? (1 / (pick.open_price || 1.91));
                     const ev = pick.ev ?? 0;
-                    const sigma = pick.sigma ?? 12;
+                    const sigmaUsed = pick.sigma_used ?? pick.sigma_residual ?? '?';
+                    const betaUsed = pick.beta_used ?? '?';
                     
                     return (
                       <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/10' : ''}`}>
@@ -570,8 +571,8 @@ export default function LiveOps() {
                         <td className="p-2 text-right font-data text-zinc-500">
                           {coverThreshold > 0 ? '+' : ''}{coverThreshold?.toFixed(1)}
                         </td>
-                        <td className="p-2 text-right font-data text-blue-400">
-                          {sigma?.toFixed(1)}
+                        <td className="p-2 text-right font-data text-blue-400" title={`β=${betaUsed}`}>
+                          {typeof sigmaUsed === 'number' ? sigmaUsed.toFixed(1) : sigmaUsed}
                         </td>
                       </tr>
                     );
