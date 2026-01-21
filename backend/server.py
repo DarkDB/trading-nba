@@ -1508,153 +1508,6 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     OPERATIONAL_CONFIG["calibration"]["beta"] = round(beta, 4)
     OPERATIONAL_CONFIG["calibration"]["sigma_residual"] = round(sigma_residual, 2)
     OPERATIONAL_CONFIG["calibration"]["calibration_source"] = "computed_vs_market"
-        
-        if not home_stats or not away_stats:
-            continue
-        
-        home_rest = calculate_rest_days(game_date, home_prev)
-        away_rest = calculate_rest_days(game_date, away_prev)
-        
-        features = {
-            "diff_net_rating": home_stats['net_rating'] - away_stats['net_rating'],
-            "diff_pace": home_stats['pace'] - away_stats['pace'],
-            "diff_efg": home_stats['efg'] - away_stats['efg'],
-            "diff_tov_pct": home_stats['tov_pct'] - away_stats['tov_pct'],
-            "diff_orb_pct": home_stats['orb_pct'] - away_stats['orb_pct'],
-            "diff_ftr": home_stats['ftr'] - away_stats['ftr'],
-            "diff_rest": home_rest - away_rest,
-            "home_advantage": 1
-        }
-        
-        # Build feature vector and predict
-        X = np.array([[features.get(col, 0) for col in feature_cols]])
-        
-        try:
-            X_scaled = scaler.transform(X)
-            pred_margin = float(model.predict(X_scaled)[0])
-        except Exception:
-            continue
-        
-        # Actual margin
-        actual_margin = game.get('home_pts', 0) - game.get('away_pts', 0)
-        
-        # cover_threshold = -market_spread (HOME convention)
-        cover_threshold = -market_spread
-        
-        # model_edge = pred_margin - cover_threshold
-        model_edge = pred_margin - cover_threshold
-        
-        # residual_vs_market = actual_margin - cover_threshold
-        residual_vs_market = actual_margin - cover_threshold
-        
-        calibration_data.append({
-            "game_id": game.get('game_id'),
-            "season": game.get('season', 'unknown'),
-            "pred_margin": round(pred_margin, 2),
-            "actual_margin": actual_margin,
-            "market_spread": market_spread,
-            "cover_threshold": round(cover_threshold, 2),
-            "model_edge": round(model_edge, 2),
-            "residual_vs_market": round(residual_vs_market, 2)
-        })
-    
-    if len(calibration_data) < min_games:
-        # Fallback: use games without market data, assume spread = 0
-        logger.warning(f"Only {len(calibration_data)} games with market data. Using synthetic spreads for remaining.")
-        
-        for game in games:
-            game_date = game['game_date']
-            home_abbr, away_abbr = game['home_team'], game['away_team']
-            
-            # Skip if already processed
-            if any(d['game_id'] == game.get('game_id') for d in calibration_data):
-                continue
-            
-            home_prev = [g for g in team_games.get(home_abbr, []) if g['game_date'] < game_date][-N:]
-            away_prev = [g for g in team_games.get(away_abbr, []) if g['game_date'] < game_date][-N:]
-            
-            if len(home_prev) < 5 or len(away_prev) < 5:
-                continue
-            
-            home_stats = await calculate_team_stats_from_games(home_abbr, home_prev)
-            away_stats = await calculate_team_stats_from_games(away_abbr, away_prev)
-            
-            if not home_stats or not away_stats:
-                continue
-            
-            home_rest = calculate_rest_days(game_date, home_prev)
-            away_rest = calculate_rest_days(game_date, away_prev)
-            
-            features = {
-                "diff_net_rating": home_stats['net_rating'] - away_stats['net_rating'],
-                "diff_pace": home_stats['pace'] - away_stats['pace'],
-                "diff_efg": home_stats['efg'] - away_stats['efg'],
-                "diff_tov_pct": home_stats['tov_pct'] - away_stats['tov_pct'],
-                "diff_orb_pct": home_stats['orb_pct'] - away_stats['orb_pct'],
-                "diff_ftr": home_stats['ftr'] - away_stats['ftr'],
-                "diff_rest": home_rest - away_rest,
-                "home_advantage": 1
-            }
-            
-            X = np.array([[features.get(col, 0) for col in feature_cols]])
-            
-            try:
-                X_scaled = scaler.transform(X)
-                pred_margin = float(model.predict(X_scaled)[0])
-            except Exception:
-                continue
-            
-            actual_margin = game.get('home_pts', 0) - game.get('away_pts', 0)
-            
-            # Use pred_margin as synthetic "market expectation" (spread = -pred_margin)
-            # This gives model_edge = 0, useful for estimating sigma_residual
-            market_spread = -pred_margin  # Synthetic: market = model
-            cover_threshold = -market_spread
-            model_edge = pred_margin - cover_threshold  # = 0
-            residual_vs_market = actual_margin - cover_threshold
-            
-            calibration_data.append({
-                "game_id": game.get('game_id'),
-                "season": game.get('season', 'unknown'),
-                "pred_margin": round(pred_margin, 2),
-                "actual_margin": actual_margin,
-                "market_spread": round(market_spread, 2),
-                "cover_threshold": round(cover_threshold, 2),
-                "model_edge": round(model_edge, 2),
-                "residual_vs_market": round(residual_vs_market, 2),
-                "synthetic_spread": True
-            })
-    
-    n_samples = len(calibration_data)
-    if n_samples < 50:
-        return {
-            "status": "insufficient_data",
-            "warning": f"Only {n_samples} valid samples for calibration",
-            "flags": ["INSUFFICIENT_DATA"]
-        }
-    
-    # Extract X (model_edge) and Y (residual_vs_market)
-    X_calib = np.array([d['model_edge'] for d in calibration_data])
-    Y_calib = np.array([d['residual_vs_market'] for d in calibration_data])
-    
-    # Linear regression: Y = alpha + beta * X
-    slope, intercept, r_value, p_value, std_err = scipy_stats.linregress(X_calib, Y_calib)
-    
-    beta = float(slope)
-    alpha = float(intercept)
-    r_squared = float(r_value ** 2)
-    
-    # Calculate residuals from the regression
-    Y_pred = alpha + beta * X_calib
-    regression_residuals = Y_calib - Y_pred
-    sigma_residual = float(np.std(regression_residuals))
-    mean_residual = float(np.mean(regression_residuals))
-    
-    # Update OPERATIONAL_CONFIG
-    OPERATIONAL_CONFIG["calibration"]["alpha"] = round(alpha, 4)
-    OPERATIONAL_CONFIG["calibration"]["beta"] = round(beta, 4)
-    OPERATIONAL_CONFIG["calibration"]["sigma_residual"] = round(sigma_residual, 2)
-    OPERATIONAL_CONFIG["calibration"]["calibration_source"] = "computed_vs_market"
     
     # Save to database
     await db.model_calibration.update_one(
@@ -1664,29 +1517,17 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
             "beta": round(beta, 4),
             "sigma_residual": round(sigma_residual, 2),
             "r_squared": round(r_squared, 4),
-            "p_value": round(p_value, 6),
-            "std_err_beta": round(std_err, 4),
-            "n_samples": n_samples,
-            "n_with_real_spread": sum(1 for d in calibration_data if not d.get('synthetic_spread')),
+            "p_value": round(p_value, 6) if p_value != 1.0 else None,
+            "std_err_beta": round(std_err, 4) if std_err > 0 else None,
+            "n_samples": n_total,
+            "n_with_spread": n_with_spread,
+            "beta_source": beta_source,
             "computed_at": datetime.now(timezone.utc).isoformat(),
             "model_version": model_doc.get('model_version'),
             "calibration_source": "computed_vs_market",
-            "residual_stats": {
-                "mean": round(mean_residual, 2),
-                "std": round(sigma_residual, 2),
-                "min": round(float(np.min(regression_residuals)), 2),
-                "max": round(float(np.max(regression_residuals)), 2),
-                "percentiles": {
-                    "p25": round(float(np.percentile(regression_residuals, 25)), 2),
-                    "p50": round(float(np.percentile(regression_residuals, 50)), 2),
-                    "p75": round(float(np.percentile(regression_residuals, 75)), 2)
-                }
-            },
-            "model_edge_stats": {
-                "mean": round(float(np.mean(X_calib)), 2),
-                "std": round(float(np.std(X_calib)), 2),
-                "min": round(float(np.min(X_calib)), 2),
-                "max": round(float(np.max(X_calib)), 2)
+            "model_residual_stats": {
+                "mean": round(mean_residual_model, 2),
+                "std": round(sigma_from_model, 2),
             }
         }},
         upsert=True
@@ -1704,10 +1545,8 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         flags.append("WARNING_SIGMA_RESIDUAL_LOW")
     if sigma_residual > 20:
         flags.append("WARNING_SIGMA_RESIDUAL_HIGH")
-    if r_squared < 0.01:
-        flags.append("WARNING_LOW_R_SQUARED (model edge explains little variance)")
-    if p_value > 0.05:
-        flags.append("WARNING_BETA_NOT_SIGNIFICANT (p > 0.05)")
+    if "default" in beta_source:
+        flags.append(f"INFO_USING_DEFAULT_BETA ({beta_source})")
     
     return {
         "status": "completed",
@@ -1715,9 +1554,23 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         "alpha": round(alpha, 4),
         "beta": round(beta, 4),
         "sigma_residual": round(sigma_residual, 2),
-        "r_squared": round(r_squared, 4),
-        "p_value": round(p_value, 6),
-        "std_err_beta": round(std_err, 4),
+        "beta_source": beta_source,
+        "r_squared": round(r_squared, 4) if r_squared > 0 else None,
+        "n_samples": n_total,
+        "n_with_spread": n_with_spread,
+        "interpretation": {
+            "beta_meaning": "Shrinkage factor: how much the model's edge translates to actual edge",
+            "beta_value": f"beta={beta:.3f} means model's raw edge is shrunk by {(1-beta)*100:.0f}%",
+            "alpha_meaning": "Systematic bias vs market",
+            "sigma_meaning": "Uncertainty in model vs market residuals"
+        },
+        "model_residual_stats": {
+            "mean": round(mean_residual_model, 2),
+            "std": round(sigma_from_model, 2),
+        },
+        "flags": flags,
+        "computed_at": datetime.now(timezone.utc).isoformat()
+    }
         "n_samples": n_samples,
         "n_with_real_spread": sum(1 for d in calibration_data if not d.get('synthetic_spread')),
         "interpretation": {
