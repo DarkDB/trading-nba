@@ -1941,7 +1941,7 @@ async def generate_picks(
             operative_picks = operative_picks[:max_picks]
     
     # Log stats
-    logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}. Calibration: {calibration_type}, beta={beta:.3f}")
+    logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
     
     if operative_mode:
         return {
@@ -1950,11 +1950,13 @@ async def generate_picks(
             "count": len(operative_picks),
             "total_analyzed": len(picks),
             "operative_mode": True,
+            "probability_mode": probability_mode,
             "calibration": {
                 "type": calibration_type,
-                "alpha": alpha,
-                "beta": beta,
-                "sigma_residual": sigma_residual
+                "alpha_used": alpha,
+                "beta_used": beta,
+                "sigma_used": sigma_residual,
+                "beta_source": beta_source
             },
             "filters_applied": OPERATIONAL_CONFIG['operative_thresholds']
         }
@@ -1963,11 +1965,13 @@ async def generate_picks(
             "picks": picks,
             "count": len(picks),
             "operative_mode": False,
+            "probability_mode": probability_mode,
             "calibration": {
                 "type": calibration_type,
-                "alpha": alpha,
-                "beta": beta,
-                "sigma_residual": sigma_residual
+                "alpha_used": alpha,
+                "beta_used": beta,
+                "sigma_used": sigma_residual,
+                "beta_source": beta_source
             }
         }
 
