@@ -2099,23 +2099,37 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     scaler = model_data['scaler']
     feature_cols = model_data['features']
     
-    # Get VS_MARKET calibration (preferred) or fall back to legacy sigma
+    # Get VS_MARKET calibration - REQUIRED, no fallback
     vs_market_doc = await db.model_calibration.find_one({"key": "vs_market"}, {"_id": 0})
-    sigma_doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
     
-    if vs_market_doc:
-        calibration_type = "vs_market"
-        alpha = vs_market_doc.get('alpha', 0.0)
-        beta = vs_market_doc.get('beta', 1.0)
-        sigma_residual = vs_market_doc.get('sigma_residual', 15.0)
-        calibration_source = vs_market_doc.get('calibration_source', 'computed_vs_market')
-    else:
-        # Fallback to legacy sigma approach with default beta=1, alpha=0
-        calibration_type = "legacy_sigma"
-        alpha = 0.0
-        beta = 1.0  # No shrinkage
-        sigma_residual = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
-        calibration_source = sigma_doc.get('sigma_source', 'default') if sigma_doc else 'default'
+    if not vs_market_doc:
+        return {
+            "error": "VS_MARKET calibration not found",
+            "flags": ["NO_VS_MARKET_CALIBRATION"],
+            "action_required": "Run POST /api/admin/model/calibrate-vs-market first"
+        }
+    
+    # Extract calibration parameters - no defaults allowed
+    alpha = vs_market_doc.get('alpha')
+    beta = vs_market_doc.get('beta')
+    sigma_residual = vs_market_doc.get('sigma_residual')
+    beta_source = vs_market_doc.get('beta_source', 'unknown')
+    
+    if alpha is None or beta is None or sigma_residual is None:
+        return {
+            "error": f"Invalid VS_MARKET calibration: alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}",
+            "flags": ["INVALID_CALIBRATION"]
+        }
+    
+    # Validate sigma_residual is not the forbidden 12.0 default
+    if sigma_residual == 12.0:
+        return {
+            "error": "sigma_residual=12.0 detected (legacy default). Re-run calibration.",
+            "flags": ["LEGACY_SIGMA_DETECTED"]
+        }
+    
+    calibration_type = "VS_MARKET"
+    probability_mode = "VS_MARKET"
     
     # Analyze predictions
     analysis_data = []
