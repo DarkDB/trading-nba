@@ -274,28 +274,32 @@ export default function LiveOps() {
           <CardContent className="py-3">
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-4 text-sm flex-wrap">
-                <span className="text-zinc-500">Filtros (EV mode):</span>
+                <span className="text-zinc-500">Filtros (VS_MARKET mode):</span>
                 <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">EV ≥ 2%</Badge>
                 <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
                 <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
-                <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/30">σ = {auditReport?.model_info?.sigma || 12.0}</Badge>
+                <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/30">
+                  β={auditReport?.model_info?.calibration?.beta_used ?? '?'} | σ={auditReport?.model_info?.calibration?.sigma_used ?? '?'}
+                </Badge>
               </div>
               <div className="flex gap-2">
                 <Button
                   onClick={async () => {
                     setSyncing(prev => ({ ...prev, sigma: true }));
                     try {
-                      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/model/sigma/recompute`, {
+                      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/model/calibrate-vs-market`, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
                       });
                       const data = await response.json();
-                      if (data.sigma_global) {
-                        toast.success(`Sigma recalculado: ${data.sigma_global} (n=${data.n_samples})`);
+                      if (data.status === 'completed') {
+                        toast.success(`VS_MARKET calibrado: β=${data.beta}, σ=${data.sigma_residual}`);
                         loadAuditReport();
+                      } else {
+                        toast.error(data.warning || 'Error en calibración');
                       }
                     } catch (e) {
-                      toast.error('Error computing sigma');
+                      toast.error('Error calibrating VS_MARKET');
                     } finally {
                       setSyncing(prev => ({ ...prev, sigma: false }));
                     }
@@ -306,7 +310,7 @@ export default function LiveOps() {
                   className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
                 >
                   {syncing.sigma ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-                  Recompute σ
+                  Calibrate VS_MARKET
                 </Button>
                 <Button
                   onClick={loadAuditReport}
