@@ -1748,21 +1748,36 @@ async def generate_picks(
     model_version = model_data['model_version']
     model_id = model_data['model_id']
     
-    # Get VS_MARKET calibration (preferred) or fall back to legacy sigma
+    # Get VS_MARKET calibration - REQUIRED, no fallback to legacy sigma
     vs_market_doc = await db.model_calibration.find_one({"key": "vs_market"}, {"_id": 0})
-    sigma_doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
     
-    if vs_market_doc:
-        calibration_type = "vs_market"
-        alpha = vs_market_doc.get('alpha', 0.0)
-        beta = vs_market_doc.get('beta', 1.0)
-        sigma_residual = vs_market_doc.get('sigma_residual', 15.0)
-    else:
-        # Fallback to legacy sigma approach with default beta=1, alpha=0
-        calibration_type = "legacy_sigma"
-        alpha = 0.0
-        beta = 1.0
-        sigma_residual = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
+    if not vs_market_doc:
+        raise HTTPException(
+            status_code=400, 
+            detail="VS_MARKET calibration not found. Run POST /api/admin/model/calibrate-vs-market first."
+        )
+    
+    # Extract calibration parameters - no defaults allowed
+    alpha = vs_market_doc.get('alpha')
+    beta = vs_market_doc.get('beta')
+    sigma_residual = vs_market_doc.get('sigma_residual')
+    
+    if alpha is None or beta is None or sigma_residual is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid VS_MARKET calibration. Missing parameters: alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}"
+        )
+    
+    # Validate sigma_residual is not the forbidden 12.0 default
+    if sigma_residual == 12.0:
+        raise HTTPException(
+            status_code=400,
+            detail="sigma_residual=12.0 detected (legacy default). Re-run /api/admin/model/calibrate-vs-market."
+        )
+    
+    calibration_type = "VS_MARKET"
+    probability_mode = "VS_MARKET"
+    beta_source = vs_market_doc.get('beta_source', 'unknown')
     
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(50)
     
