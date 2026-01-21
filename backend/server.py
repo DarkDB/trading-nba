@@ -1485,7 +1485,7 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
             sigma_residual = float(np.std(regression_residuals))
         else:
             # Not enough variance, use defaults
-            beta = 0.4  # Conservative shrinkage
+            beta = 0.35  # Conservative shrinkage
             alpha = 0.0
             r_squared = 0.0
             p_value = 1.0
