@@ -1697,46 +1697,56 @@ async def export_history(user=Depends(get_current_user)):
 @api_router.get("/audit/model-sanity")
 async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     """
-    Generate a quantitative sanity report for model predictions.
-    Analyzes the last N predictions for scale/calibration issues.
+    Generate a comprehensive sanity report for model predictions.
+    Includes: pred_margin stats, p_cover stats, EV stats, and top 10 by EV.
     """
     import numpy as np
+    import joblib
+    import io
     
-    # Get the last N picks from current session (or generate fresh ones)
-    # We'll analyze from the picks/generate endpoint data
-    
-    # First, let's get the model
+    # Get model
     model_doc = await db.models.find_one({"is_active": True})
     if not model_doc:
         return {"error": "No active model", "flags": ["NO_MODEL"]}
     
-    # Get upcoming events with lines
-    events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)
+    # Get upcoming events
+    events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(n)
     if not events:
         return {"error": "No upcoming events", "flags": ["NO_EVENTS"]}
     
     # Load model
-    import joblib
-    import io
     model = joblib.load(io.BytesIO(model_doc['model_binary']))
-    scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
     feature_cols = model_doc.get('feature_columns') or list(model_doc.get('coefficients', {}).keys())
     
-    # Analyze all available predictions
+    # Handle scaler
+    if 'scaler_binary' in model_doc and model_doc['scaler_binary']:
+        scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
+    else:
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        n_features = len(feature_cols)
+        scaler.mean_ = np.zeros(n_features)
+        scaler.scale_ = np.ones(n_features)
+        scaler.var_ = np.ones(n_features)
+        scaler.n_features_in_ = n_features
+    
+    # Get sigma
+    sigma_doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
+    sigma = sigma_doc['sigma_global'] if sigma_doc else OPERATIONAL_CONFIG['calibration']['sigma_global']
+    sigma_source = sigma_doc.get('sigma_source', 'default') if sigma_doc else 'default'
+    
+    # Analyze predictions
     analysis_data = []
     
     for event in events:
-        # Get lines
         lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
         ref_line = get_reference_line(lines)
         if not ref_line:
             continue
         
-        # Get team mappings
         home_abbr = NBA_ODDS_TO_STATS_MAPPING.get(event['home_team'], event['home_team'][:3].upper())
         away_abbr = NBA_ODDS_TO_STATS_MAPPING.get(event['away_team'], event['away_team'][:3].upper())
         
-        # Get features
         matchup_data = await build_matchup_features_for_prediction(home_abbr, away_abbr)
         if not matchup_data:
             continue
@@ -1751,7 +1761,21 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
         raw_edge_signed = pred_margin - cover_threshold
         betting_edge = abs(raw_edge_signed)
         
-        # Calculate feature contributions
+        # Determine side
+        if pred_margin > cover_threshold:
+            recommended_side = "HOME"
+            open_price = ref_line['price_home_decimal']
+        else:
+            recommended_side = "AWAY"
+            open_price = ref_line['price_away_decimal']
+        
+        # Calculate z-score, p_cover, implied_prob, EV
+        z = raw_edge_signed / sigma
+        p_cover = calculate_p_cover(pred_margin, cover_threshold, sigma, recommended_side)
+        implied_prob = 1.0 / open_price if open_price > 1.0 else 0.5
+        ev = calculate_ev(p_cover, open_price)
+        
+        # Feature contributions
         contributions = {}
         for i, col in enumerate(feature_cols):
             contributions[col] = round(float(model.coef_[i]) * X_scaled[0][i], 4)
@@ -1764,69 +1788,83 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
             "cover_threshold": round(cover_threshold, 2),
             "raw_edge_signed": round(raw_edge_signed, 2),
             "betting_edge": round(betting_edge, 2),
+            "z": round(z, 3),
+            "sigma": round(sigma, 2),
+            "recommended_side": recommended_side,
+            "open_price": round(open_price, 3),
+            "implied_prob": round(implied_prob, 4),
+            "p_cover": round(p_cover, 4),
+            "ev": round(ev, 4),
             "features_raw": {k: round(v, 4) for k, v in features.items()},
-            "feature_contributions": contributions,
-            "intercept_contribution": round(float(model.intercept_), 4)
+            "feature_contributions": contributions
         })
     
     if not analysis_data:
         return {"error": "No data to analyze", "flags": ["NO_DATA"]}
     
-    # Calculate statistics
+    # Extract arrays for statistics
     pred_margins = [d['pred_margin'] for d in analysis_data]
-    cover_thresholds = [d['cover_threshold'] for d in analysis_data]
+    p_covers = [d['p_cover'] for d in analysis_data]
+    evs = [d['ev'] for d in analysis_data]
     betting_edges = [d['betting_edge'] for d in analysis_data]
-    
     n_samples = len(pred_margins)
     
+    # Calculate comprehensive statistics
     stats = {
         "n_samples": n_samples,
+        "sigma_used": sigma,
+        "sigma_source": sigma_source,
         "pred_margin": {
             "mean": round(np.mean(pred_margins), 2),
             "std": round(np.std(pred_margins), 2),
             "min": round(np.min(pred_margins), 2),
             "max": round(np.max(pred_margins), 2),
             "mean_abs": round(np.mean(np.abs(pred_margins)), 2),
-            "median": round(np.median(pred_margins), 2),
         },
-        "cover_threshold": {
-            "mean": round(np.mean(cover_thresholds), 2),
-            "std": round(np.std(cover_thresholds), 2),
+        "p_cover": {
+            "mean": round(np.mean(p_covers), 4),
+            "std": round(np.std(p_covers), 4),
+            "min": round(np.min(p_covers), 4),
+            "max": round(np.max(p_covers), 4),
         },
-        "betting_edge": {
-            "mean": round(np.mean(betting_edges), 2),
-            "std": round(np.std(betting_edges), 2),
-            "min": round(np.min(betting_edges), 2),
-            "max": round(np.max(betting_edges), 2),
+        "ev": {
+            "mean": round(np.mean(evs), 4),
+            "std": round(np.std(evs), 4),
+            "min": round(np.min(evs), 4),
+            "max": round(np.max(evs), 4),
         },
         "distributions": {
+            "pct_p_cover_gt_60": round(100 * sum(1 for p in p_covers if p > 0.60) / n_samples, 1),
+            "pct_p_cover_gt_65": round(100 * sum(1 for p in p_covers if p > 0.65) / n_samples, 1),
+            "pct_p_cover_gt_70": round(100 * sum(1 for p in p_covers if p > 0.70) / n_samples, 1),
+            "pct_ev_gte_2pct": round(100 * sum(1 for e in evs if e >= 0.02) / n_samples, 1),
+            "pct_ev_gte_5pct": round(100 * sum(1 for e in evs if e >= 0.05) / n_samples, 1),
+            "pct_ev_gte_8pct": round(100 * sum(1 for e in evs if e >= 0.08) / n_samples, 1),
             "pct_abs_pred_margin_gt_10": round(100 * sum(1 for p in pred_margins if abs(p) > 10) / n_samples, 1),
             "pct_abs_pred_margin_gt_15": round(100 * sum(1 for p in pred_margins if abs(p) > 15) / n_samples, 1),
-            "pct_abs_pred_margin_gt_20": round(100 * sum(1 for p in pred_margins if abs(p) > 20) / n_samples, 1),
-            "pct_betting_edge_gte_8": round(100 * sum(1 for e in betting_edges if e >= 8) / n_samples, 1),
-            "pct_betting_edge_gte_10": round(100 * sum(1 for e in betting_edges if e >= 10) / n_samples, 1),
-            "pct_betting_edge_gte_12": round(100 * sum(1 for e in betting_edges if e >= 12) / n_samples, 1),
         }
     }
     
-    # Generate flags
+    # Flags
     flags = []
     if stats["distributions"]["pct_abs_pred_margin_gt_15"] > 25:
-        flags.append("POSSIBLE_SCALE_CALIBRATION_ISSUE")
-    if stats["distributions"]["pct_abs_pred_margin_gt_20"] > 15:
-        flags.append("LIKELY_SCALE_ISSUE")
-    if stats["pred_margin"]["std"] > 12:
-        flags.append("HIGH_PREDICTION_VARIANCE")
-    if stats["betting_edge"]["mean"] > 8:
-        flags.append("UNUSUALLY_HIGH_AVERAGE_EDGE")
+        flags.append("POSSIBLE_SCALE_ISSUE")
+    if stats["distributions"]["pct_p_cover_gt_70"] > 30:
+        flags.append("UNUSUALLY_HIGH_P_COVER")
+    if stats["ev"]["mean"] > 0.10:
+        flags.append("UNUSUALLY_HIGH_MEAN_EV")
+    if sigma_source == "default":
+        flags.append("USING_DEFAULT_SIGMA")
     
-    # Get top 10 most extreme by betting_edge
-    sorted_data = sorted(analysis_data, key=lambda x: x['betting_edge'], reverse=True)
-    top_10_extreme = sorted_data[:10]
+    # Top 10 by EV
+    sorted_by_ev = sorted(analysis_data, key=lambda x: x['ev'], reverse=True)
+    top_10_by_ev = sorted_by_ev[:10]
     
     # Model info
     model_info = {
         "model_version": model_doc.get('model_version'),
+        "sigma": sigma,
+        "sigma_source": sigma_source,
         "intercept": round(float(model.intercept_), 4),
         "coefficients": {col: round(float(coef), 4) for col, coef in zip(feature_cols, model.coef_)},
         "mae": model_doc.get('metrics', {}).get('mae'),
@@ -1834,13 +1872,13 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     }
     
     return {
-        "report_type": "MODEL_SANITY_AUDIT",
+        "report_type": "MODEL_SANITY_AUDIT_V2",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_info": model_info,
         "statistics": stats,
         "flags": flags,
         "flag_count": len(flags),
-        "top_10_extreme_picks": top_10_extreme,
+        "top_10_by_ev": top_10_by_ev,
         "all_analyzed_picks": analysis_data
     }
 
