@@ -1073,7 +1073,19 @@ async def recompute_sigma(season: str = None, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="No active model")
     
     model = joblib.load(io.BytesIO(model_doc['model_binary']))
-    scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
+    
+    # Handle missing scaler (for backward compatibility)
+    if 'scaler_binary' in model_doc and model_doc['scaler_binary']:
+        scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
+    else:
+        # Create a simple passthrough scaler if not available
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        scaler.mean_ = np.zeros(len(model_doc.get('feature_columns', [])))
+        scaler.scale_ = np.ones(len(model_doc.get('feature_columns', [])))
+        scaler.var_ = np.ones(len(model_doc.get('feature_columns', [])))
+        scaler.n_features_in_ = len(model_doc.get('feature_columns', []))
+    
     feature_cols = model_doc['feature_columns']
     
     # Get historical games with features
