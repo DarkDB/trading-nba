@@ -1052,16 +1052,14 @@ async def refresh_results(user=Depends(get_current_user)):
     return SyncStatus(status="completed", message="Results refresh not yet implemented", details={})
 
 @api_router.post("/admin/model/sigma/recompute")
-async def recompute_sigma(season: str = None, user=Depends(get_current_user)):
+async def recompute_sigma(season: str = None, min_games: int = 100, user=Depends(get_current_user)):
     """
-    Compute sigma (prediction uncertainty) from historical residuals.
+    Compute sigma (prediction uncertainty) from historical PRE-MATCH residuals.
     
-    Uses completed games where we have both:
-    - Pre-match prediction (from features)
-    - Actual result
-    
-    residual = actual_margin - pred_margin
+    residual = (home_pts - away_pts) - pred_margin_pre_match
     sigma = std(residuals)
+    
+    Uses rolling window features computed BEFORE each game to get pred_margin_pre_match.
     """
     import numpy as np
     import joblib
@@ -1073,20 +1071,211 @@ async def recompute_sigma(season: str = None, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="No active model")
     
     model = joblib.load(io.BytesIO(model_doc['model_binary']))
+    feature_cols = model_doc.get('feature_columns') or list(model_doc.get('coefficients', {}).keys())
     
-    # Handle missing scaler (for backward compatibility)
+    # Handle scaler
     if 'scaler_binary' in model_doc and model_doc['scaler_binary']:
         scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
     else:
-        # Create a simple passthrough scaler if not available
         from sklearn.preprocessing import StandardScaler
         scaler = StandardScaler()
-        scaler.mean_ = np.zeros(len(model_doc.get('feature_columns', [])))
-        scaler.scale_ = np.ones(len(model_doc.get('feature_columns', [])))
-        scaler.var_ = np.ones(len(model_doc.get('feature_columns', [])))
-        scaler.n_features_in_ = len(model_doc.get('feature_columns', []))
+        n_features = len(feature_cols)
+        scaler.mean_ = np.zeros(n_features)
+        scaler.scale_ = np.ones(n_features)
+        scaler.var_ = np.ones(n_features)
+        scaler.n_features_in_ = n_features
     
-    feature_cols = model_doc.get('feature_columns') or list(model_doc.get('coefficients', {}).keys())
+    # Get all historical games
+    query = {}
+    if season:
+        query["season"] = season
+    
+    games = await db.games.find(query, {"_id": 0}).sort("game_date", 1).to_list(10000)
+    
+    if len(games) < min_games:
+        # Return warning with default sigma
+        return {
+            "status": "insufficient_data",
+            "warning": f"Only {len(games)} games available, need at least {min_games}",
+            "sigma_global": OPERATIONAL_CONFIG["calibration"]["sigma_global"],
+            "sigma_source": "default",
+            "n_games_available": len(games),
+            "flags": ["INSUFFICIENT_DATA_USING_DEFAULT"]
+        }
+    
+    # Build team game history for rolling window
+    N = OPERATIONAL_CONFIG["rolling_window_n"]
+    team_games = {}
+    for game in games:
+        for team_abbr in [game['home_team'], game['away_team']]:
+            if team_abbr not in team_games:
+                team_games[team_abbr] = []
+            team_games[team_abbr].append(game)
+    
+    residuals = []
+    residuals_by_season = {}
+    analyzed_games = []
+    
+    for game in games:
+        game_date = game['game_date']
+        home_abbr, away_abbr = game['home_team'], game['away_team']
+        
+        # Get PRE-MATCH games (before this game date)
+        home_prev = [g for g in team_games.get(home_abbr, []) if g['game_date'] < game_date][-N:]
+        away_prev = [g for g in team_games.get(away_abbr, []) if g['game_date'] < game_date][-N:]
+        
+        if len(home_prev) < 5 or len(away_prev) < 5:
+            continue
+        
+        # Calculate PRE-MATCH features
+        home_stats = await calculate_team_stats_from_games(home_abbr, home_prev)
+        away_stats = await calculate_team_stats_from_games(away_abbr, away_prev)
+        
+        if not home_stats or not away_stats:
+            continue
+        
+        home_rest = calculate_rest_days(game_date, home_prev)
+        away_rest = calculate_rest_days(game_date, away_prev)
+        
+        features = {
+            "diff_net_rating": home_stats['net_rating'] - away_stats['net_rating'],
+            "diff_pace": home_stats['pace'] - away_stats['pace'],
+            "diff_efg": home_stats['efg'] - away_stats['efg'],
+            "diff_tov_pct": home_stats['tov_pct'] - away_stats['tov_pct'],
+            "diff_orb_pct": home_stats['orb_pct'] - away_stats['orb_pct'],
+            "diff_ftr": home_stats['ftr'] - away_stats['ftr'],
+            "diff_rest": home_rest - away_rest,
+            "home_advantage": 1
+        }
+        
+        # Build feature vector
+        X = np.array([[features.get(col, 0) for col in feature_cols]])
+        
+        try:
+            X_scaled = scaler.transform(X)
+            pred_margin_pre_match = float(model.predict(X_scaled)[0])
+        except Exception as e:
+            continue
+        
+        # Actual margin
+        actual_margin = game.get('home_pts', 0) - game.get('away_pts', 0)
+        
+        # Residual = actual - predicted
+        residual = actual_margin - pred_margin_pre_match
+        residuals.append(residual)
+        
+        # Track by season
+        game_season = game.get('season', 'unknown')
+        if game_season not in residuals_by_season:
+            residuals_by_season[game_season] = []
+        residuals_by_season[game_season].append(residual)
+        
+        analyzed_games.append({
+            "game_id": game.get('game_id'),
+            "season": game_season,
+            "actual_margin": actual_margin,
+            "pred_margin": round(pred_margin_pre_match, 2),
+            "residual": round(residual, 2)
+        })
+    
+    if len(residuals) < min_games:
+        return {
+            "status": "insufficient_data",
+            "warning": f"Only {len(residuals)} games with valid features, need at least {min_games}",
+            "sigma_global": OPERATIONAL_CONFIG["calibration"]["sigma_global"],
+            "sigma_source": "default",
+            "n_analyzed": len(residuals),
+            "flags": ["INSUFFICIENT_DATA_USING_DEFAULT"]
+        }
+    
+    # Calculate sigma and statistics
+    sigma_global = float(np.std(residuals))
+    mean_residual = float(np.mean(residuals))
+    
+    # Per-season sigmas
+    sigma_by_season = {}
+    for s, res in residuals_by_season.items():
+        if len(res) >= 20:
+            sigma_by_season[s] = {
+                "sigma": round(float(np.std(res)), 2),
+                "mean_residual": round(float(np.mean(res)), 2),
+                "n_games": len(res)
+            }
+    
+    # Update global config
+    OPERATIONAL_CONFIG["calibration"]["sigma_global"] = round(sigma_global, 2)
+    OPERATIONAL_CONFIG["calibration"]["sigma_source"] = "computed"
+    OPERATIONAL_CONFIG["calibration"]["computed_at"] = datetime.now(timezone.utc).isoformat()
+    OPERATIONAL_CONFIG["calibration"]["n_samples"] = len(residuals)
+    
+    # Save to database for persistence
+    await db.model_calibration.update_one(
+        {"key": "sigma"},
+        {"$set": {
+            "sigma_global": round(sigma_global, 2),
+            "mean_residual": round(mean_residual, 2),
+            "sigma_by_season": sigma_by_season,
+            "n_samples": len(residuals),
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+            "model_version": model_doc.get('model_version'),
+            "residual_stats": {
+                "mean": round(mean_residual, 2),
+                "std": round(sigma_global, 2),
+                "min": round(float(np.min(residuals)), 2),
+                "max": round(float(np.max(residuals)), 2),
+                "percentiles": {
+                    "p25": round(float(np.percentile(residuals, 25)), 2),
+                    "p50": round(float(np.percentile(residuals, 50)), 2),
+                    "p75": round(float(np.percentile(residuals, 75)), 2),
+                    "p90": round(float(np.percentile(residuals, 90)), 2)
+                }
+            }
+        }},
+        upsert=True
+    )
+    
+    # Generate flags
+    flags = []
+    if sigma_global < 8:
+        flags.append("WARNING_SIGMA_TOO_LOW (<8)")
+    if sigma_global > 20:
+        flags.append("WARNING_SIGMA_TOO_HIGH (>20)")
+    if abs(mean_residual) > 2:
+        flags.append(f"WARNING_MEAN_RESIDUAL_BIAS ({mean_residual:.2f})")
+    
+    return {
+        "status": "completed",
+        "sigma_global": round(sigma_global, 2),
+        "sigma_source": "computed",
+        "mean_residual": round(mean_residual, 2),
+        "n_samples": len(residuals),
+        "sigma_by_season": sigma_by_season,
+        "residual_stats": {
+            "min": round(float(np.min(residuals)), 2),
+            "max": round(float(np.max(residuals)), 2),
+            "p25": round(float(np.percentile(residuals, 25)), 2),
+            "p50": round(float(np.percentile(residuals, 50)), 2),
+            "p75": round(float(np.percentile(residuals, 75)), 2)
+        },
+        "flags": flags,
+        "recommended_range": "8 <= sigma <= 20",
+        "computed_at": datetime.now(timezone.utc).isoformat()
+    }
+
+@api_router.get("/admin/model/sigma")
+async def get_sigma(user=Depends(get_current_user)):
+    """Get current sigma calibration."""
+    # Try to get from database first
+    doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
+    if doc:
+        return doc
+    
+    # Return default from config
+    return {
+        "sigma_global": OPERATIONAL_CONFIG["calibration"]["sigma_global"],
+        "sigma_source": OPERATIONAL_CONFIG["calibration"]["sigma_source"],
+        "warning": "Using default sigma. Run /admin/model/sigma/recompute to calculate from historical data."
+    }
     
     # Get historical games with features
     query = {}
