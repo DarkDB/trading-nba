@@ -2297,11 +2297,6 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
         flags.append(f"HIGH_P_COVER_OK ({pct_p_cover_gt_60:.1f}% <= 20%)")
     
     # Calibration warnings
-    if calibration_type == "legacy_sigma":
-        flags.append("USING_LEGACY_SIGMA (run /admin/model/calibrate-vs-market)")
-    if calibration_source == "default":
-        flags.append("USING_DEFAULT_CALIBRATION")
-    
     # Count passing criteria
     criteria_passed = sum(1 for f in flags if "_OK" in f)
     criteria_total = 3
@@ -2313,12 +2308,13 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     # Model info
     model_info = {
         "model_version": model_doc.get('model_version'),
+        "probability_mode": probability_mode,
         "calibration": {
             "type": calibration_type,
-            "alpha": round(alpha, 4),
-            "beta": round(beta, 4),
-            "sigma_residual": round(sigma_residual, 2),
-            "source": calibration_source
+            "alpha_used": round(alpha, 4),
+            "beta_used": round(beta, 4),
+            "sigma_used": round(sigma_residual, 2),
+            "beta_source": beta_source
         },
         "intercept": round(float(model.intercept_), 4),
         "coefficients": {col: round(float(coef), 4) for col, coef in zip(feature_cols, model.coef_)},
@@ -2329,6 +2325,7 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     return {
         "report_type": "MODEL_SANITY_AUDIT_V3_VS_MARKET",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "probability_mode": probability_mode,
         "model_info": model_info,
         "statistics": stats,
         "acceptance_criteria": {
