@@ -1,92 +1,140 @@
 # NBA Edge - PRD (Product Requirements Document)
 
-## ⚠️ STATUS: PRODUCTION LOCKED – READY FOR LIVE PICKS ⚠️
+## ⚠️ STATUS: PRODUCTION v2.0 – PROBABILITY + EV MODE ⚠️
 
-**Locked Date:** 15 Enero 2025  
+**Version:** 2.0  
+**Updated:** 18 Enero 2025  
 **Model Version:** v1.0  
-**Cover Logic Version:** v1.1 (BUG FIX VERIFIED)
-**Operative Config:** LOCKED  
-
-> ⛔ NO realizar cambios de código ni modelo sin instrucción explícita del usuario.
+**Selection Criterion:** EV ≥ 2% (probabilistic)
 
 ---
 
-## CRITICAL BUG FIX (15 Jan 2025)
+## CAMBIO PRINCIPAL v2.0: Edge → Probabilidad + EV
 
-### ❌ Bug Reportado
-El sistema recomendaba apuestas que el modelo NO cubría:
-- ORL vs MEM: pred=+0.75, spread=-5.0 → Recomendaba ORL -5.0 (INCORRECTO)
-- SAS vs MIL: pred=-0.97, spread=-7.5 → Recomendaba SAS -7.5 (INCORRECTO)
-- GSW vs NYK: pred=+2.56, spread=-7.5 → Recomendaba GSW -7.5 (INCORRECTO)
+### Antes (v1.x)
+- Selección por `betting_edge` en puntos (≥3.5)
+- Signal: GREEN/YELLOW/RED por edge
 
-### ✅ Lógica Corregida (v1.1)
+### Ahora (v2.0)
+- Selección por **EV (Expected Value)** ≥ 2%
+- `p_cover` = probabilidad de cubrir spread (usando distribución normal)
+- `EV = p_cover × price - 1`
+- Sigma calibrado desde residuos históricos
+
+---
+
+## Fórmulas Implementadas
+
+### Probabilidad de Cover (ATS)
 ```
 cover_threshold = -market_spread
-HOME cubre si: pred_margin > cover_threshold
-AWAY cubre si: pred_margin < cover_threshold
-edge = |pred_margin - cover_threshold| (siempre positivo)
+z = (pred_margin - cover_threshold) / sigma
+
+Si pick=HOME: p_cover = NormalCDF(z)
+Si pick=AWAY: p_cover = NormalCDF(-z)
 ```
 
-### Verificación Completa
-| Caso | pred | spread | threshold | Resultado | Status |
-|------|------|--------|-----------|-----------|--------|
-| ORL vs MEM | +0.75 | -5.0 | +5.0 | AWAY (MEM +5.0), edge=4.25 | ✅ |
-| SAS vs MIL | -0.97 | -7.5 | +7.5 | AWAY (MIL +7.5), edge=8.47 | ✅ |
-| **GSW vs NYK** | +2.56 | -7.5 | +7.5 | AWAY (NYK +7.5), edge=4.94 | ✅ |
-| LAL vs CHA | +8.27 | -4.5 | +4.5 | HOME (LAL -4.5), edge=3.77 | ✅ |
+### Expected Value
+```
+EV = p_cover × open_price - 1
+```
 
-### Tests Añadidos
-- `test_no_home_pick_if_pred_margin_does_not_cover_spread` - Test específico para GSW vs NYK
-- `test_no_bet_when_model_does_not_cover` - Tests para ORL y SAS
-- `test_edge_positive_and_consistent_with_side` - Validación de edge siempre positivo
-
-### Resultado Final Tests
-- Unit Tests Production: **14/14 passed (100%)**
+### Criterios de Selección (v2.0)
+- EV ≥ 0.02 (2%)
+- confidence = HIGH
+- Pinnacle required
+- Sin límite de picks/día
 
 ---
 
-## Original Problem Statement
-Construir una web app full-stack llamada "NBA Edge" orientada a operar desde España (odds en formato decimal). La app aprende con históricos NBA para predecir el margen esperado (home_pts - away_pts) y detecta value comparando con el mercado de spreads.
+## Nuevas Columnas por Pick
 
-## Technology Stack
-- **Backend**: FastAPI (Python) 
-- **Frontend**: React + Tailwind + shadcn/ui
-- **Database**: MongoDB
-- **Auth**: JWT simple
-- **External APIs**: nba_api, The Odds API
-
----
-
-## OPERATIVE PICKS VERIFICADOS (Live Ops)
-
-Los picks operativos actuales (con filtros: GREEN, edge>=3.5, HIGH, Pinnacle, max 2):
-
-1. **Miami Heat vs Boston Celtics**
-   - Apuesta: MIA +2.0 (HOME)
-   - pred=+7.56, edge=9.56
-
-2. **San Antonio Spurs vs Milwaukee Bucks**
-   - Apuesta: MIL +7.5 (AWAY)
-   - pred=-0.97, edge=8.47
-
-**GSW vs NYK NO aparece** en picks operativos (edge=4.94 < edge de los top 2).
+| Columna | Descripción |
+|---------|-------------|
+| `sigma` | Desviación estándar del modelo (12.0 por defecto) |
+| `p_cover` | Probabilidad de cubrir el spread (0-1) |
+| `implied_prob` | 1/price - probabilidad implícita del mercado |
+| `ev` | Expected Value = p_cover × price - 1 |
+| `signal_ev` | green (EV≥5%), yellow (EV≥2%), red (EV<2%) |
 
 ---
 
-## FROZEN BACKLOG (NO IMPLEMENTAR SIN AUTORIZACIÓN)
+## Endpoints Nuevos
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `POST /api/admin/model/sigma/recompute` | Recalcular sigma desde históricos |
+| `GET /api/admin/model/sigma` | Obtener calibración actual |
+
+---
+
+## Tests Añadidos (19 total)
+
+- `test_normal_cdf` - Implementación CDF normal
+- `test_probability_monotonicity` - Mayor edge → mayor p_cover
+- `test_ev_sign` - EV positivo cuando p_cover > implied_prob
+- `test_sigma_reasonable_range` - 8 ≤ sigma ≤ 20
+- `test_p_cover_boundary_cases` - p_cover ~50% en threshold
+
+---
+
+## UI Actualizada (Live Ops)
+
+Nueva tabla "All Valid Picks" con columnas:
+- Partido, Apuesta, Price, Impl%, p_cover, **EV%**, Pred, Thresh, σ
+
+Ordenado por EV descendente.
+
+---
+
+## Configuración Operativa
+
+```python
+OPERATIONAL_CONFIG = {
+    "version": "2.0",
+    "operative_thresholds": {
+        "min_ev": 0.02,  # 2% mínimo
+        "require_positive_ev": True,
+        "require_high_confidence": True,
+        "require_pinnacle": True,
+        "max_picks_per_day": None  # Sin límite
+    },
+    "calibration": {
+        "sigma_global": 12.0,  # Default, recalcular con /sigma/recompute
+        "sigma_source": "default"
+    }
+}
+```
+
+---
+
+## Notas de Calibración
+
+- **Sigma por defecto:** 12.0 (valor típico NBA)
+- **Para recalibrar:** Ejecutar `POST /api/admin/model/sigma/recompute` después de build-features
+- **Rango esperado:** 8 ≤ sigma ≤ 20
+- **Si sigma fuera de rango:** Revisar calidad de predicciones
+
+---
+
+## Ejemplo de Pick v2.0
+
+```
+Apuesta: MIN +4.0
+Price: 1.90
+Implied Prob: 52.6%
+p_cover: 60.0%
+EV: +14.0%
+Pred: +7.8
+Threshold: -4.0
+Sigma: 12.0
+```
+
+---
+
+## FROZEN BACKLOG
 
 - Automatización de resultados
 - defensive_rating real
-- Más temporadas históricas
-- Dashboard de monitorización
-
----
-
-## Test Reports
-- `/app/test_reports/iteration_3.json` - Verificación bug fix inicial
-- `/app/backend/tests/test_production.py` - 14 tests incluyendo los nuevos de cover logic
-
----
-
-## Operative Documents
-- `/app/RUNBOOK.md` - Guía operativa (actualizada v1.1)
+- Devigging de odds
+- Dashboard de performance histórico
