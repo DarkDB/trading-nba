@@ -1070,20 +1070,11 @@ async def recompute_sigma(season: str = None, min_games: int = 100, user=Depends
     if not model_doc:
         raise HTTPException(status_code=400, detail="No active model")
     
-    model = joblib.load(io.BytesIO(model_doc['model_binary']))
-    feature_cols = model_doc.get('feature_columns') or list(model_doc.get('coefficients', {}).keys())
-    
-    # Handle scaler
-    if 'scaler_binary' in model_doc and model_doc['scaler_binary']:
-        scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
-    else:
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        n_features = len(feature_cols)
-        scaler.mean_ = np.zeros(n_features)
-        scaler.scale_ = np.ones(n_features)
-        scaler.var_ = np.ones(n_features)
-        scaler.n_features_in_ = n_features
+    # Load model data (contains model, scaler, features)
+    model_data = joblib.load(io.BytesIO(model_doc['model_binary']))
+    model = model_data['model']
+    scaler = model_data['scaler']
+    feature_cols = model_data['features']
     
     # Get all historical games
     query = {}
