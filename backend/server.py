@@ -1717,21 +1717,11 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     if not events:
         return {"error": "No upcoming events", "flags": ["NO_EVENTS"]}
     
-    # Load model
-    model = joblib.load(io.BytesIO(model_doc['model_binary']))
-    feature_cols = model_doc.get('feature_columns') or list(model_doc.get('coefficients', {}).keys())
-    
-    # Handle scaler
-    if 'scaler_binary' in model_doc and model_doc['scaler_binary']:
-        scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
-    else:
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        n_features = len(feature_cols)
-        scaler.mean_ = np.zeros(n_features)
-        scaler.scale_ = np.ones(n_features)
-        scaler.var_ = np.ones(n_features)
-        scaler.n_features_in_ = n_features
+    # Load model data (contains model, scaler, features)
+    model_data = joblib.load(io.BytesIO(model_doc['model_binary']))
+    model = model_data['model']
+    scaler = model_data['scaler']
+    feature_cols = model_data['features']
     
     # Get sigma
     sigma_doc = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
