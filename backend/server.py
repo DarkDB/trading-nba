@@ -1306,6 +1306,361 @@ async def get_sigma(user=Depends(get_current_user)):
         "warning": "Using default sigma. Run /admin/model/sigma/recompute to calculate from historical data."
     }
 
+
+@api_router.post("/admin/model/calibrate-vs-market")
+async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_user)):
+    """
+    Calibrate the model's edge vs market spread using historical data.
+    
+    This learns how the model's raw edge translates to actual cover outcomes:
+    residual_vs_market ~ N(beta * model_edge + alpha, sigma_residual)
+    
+    Where:
+    - model_edge = pred_margin - cover_threshold
+    - residual_vs_market = actual_margin - cover_threshold
+    
+    This is a LINEAR REGRESSION:
+    Y = residual_vs_market
+    X = model_edge
+    Y ~ N(alpha + beta * X, sigma_residual)
+    
+    Expected results:
+    - beta < 1: model is overconfident (typical)
+    - beta ≈ 0: model provides no signal
+    - beta > 1: model is underconfident (rare)
+    - alpha ≈ 0: no systematic bias vs market
+    """
+    import numpy as np
+    import joblib
+    import io
+    from scipy import stats as scipy_stats
+    
+    # Get active model
+    model_doc = await db.models.find_one({"is_active": True})
+    if not model_doc:
+        raise HTTPException(status_code=400, detail="No active model")
+    
+    # Load model
+    model_data = joblib.load(io.BytesIO(model_doc['model_binary']))
+    model = model_data['model']
+    scaler = model_data['scaler']
+    feature_cols = model_data['features']
+    
+    # Get all historical games with market lines
+    games = await db.games.find({}, {"_id": 0}).sort("game_date", 1).to_list(10000)
+    
+    if len(games) < min_games:
+        return {
+            "status": "insufficient_data",
+            "warning": f"Only {len(games)} games available, need at least {min_games}",
+            "flags": ["INSUFFICIENT_DATA"]
+        }
+    
+    # Build team game history for rolling window
+    N = OPERATIONAL_CONFIG["rolling_window_n"]
+    team_games = {}
+    for game in games:
+        for team_abbr in [game['home_team'], game['away_team']]:
+            if team_abbr not in team_games:
+                team_games[team_abbr] = []
+            team_games[team_abbr].append(game)
+    
+    # Collect calibration data points
+    calibration_data = []
+    
+    for game in games:
+        game_date = game['game_date']
+        home_abbr, away_abbr = game['home_team'], game['away_team']
+        
+        # Get PRE-MATCH games (before this game date)
+        home_prev = [g for g in team_games.get(home_abbr, []) if g['game_date'] < game_date][-N:]
+        away_prev = [g for g in team_games.get(away_abbr, []) if g['game_date'] < game_date][-N:]
+        
+        if len(home_prev) < 5 or len(away_prev) < 5:
+            continue
+        
+        # Need historical market line for this game
+        # Try to get from predictions collection (if we made a prediction for this game)
+        prediction = await db.predictions.find_one({
+            "home_team": {"$in": [home_abbr, get_team_full_name(home_abbr)]},
+            "away_team": {"$in": [away_abbr, get_team_full_name(away_abbr)]},
+            "game_date": {"$regex": game_date[:10]}  # Match date part
+        }, {"_id": 0})
+        
+        # If no prediction, try historical_lines collection
+        if not prediction:
+            hist_line = await db.historical_lines.find_one({
+                "home_team": {"$in": [home_abbr, get_team_full_name(home_abbr)]},
+                "game_date": {"$regex": game_date[:10]}
+            }, {"_id": 0})
+            if hist_line:
+                market_spread = hist_line.get('spread_point_home', 0)
+            else:
+                # Skip games without market data
+                continue
+        else:
+            market_spread = prediction.get('market_spread', 0)
+        
+        # Calculate PRE-MATCH features
+        home_stats = await calculate_team_stats_from_games(home_abbr, home_prev)
+        away_stats = await calculate_team_stats_from_games(away_abbr, away_prev)
+        
+        if not home_stats or not away_stats:
+            continue
+        
+        home_rest = calculate_rest_days(game_date, home_prev)
+        away_rest = calculate_rest_days(game_date, away_prev)
+        
+        features = {
+            "diff_net_rating": home_stats['net_rating'] - away_stats['net_rating'],
+            "diff_pace": home_stats['pace'] - away_stats['pace'],
+            "diff_efg": home_stats['efg'] - away_stats['efg'],
+            "diff_tov_pct": home_stats['tov_pct'] - away_stats['tov_pct'],
+            "diff_orb_pct": home_stats['orb_pct'] - away_stats['orb_pct'],
+            "diff_ftr": home_stats['ftr'] - away_stats['ftr'],
+            "diff_rest": home_rest - away_rest,
+            "home_advantage": 1
+        }
+        
+        # Build feature vector and predict
+        X = np.array([[features.get(col, 0) for col in feature_cols]])
+        
+        try:
+            X_scaled = scaler.transform(X)
+            pred_margin = float(model.predict(X_scaled)[0])
+        except Exception:
+            continue
+        
+        # Actual margin
+        actual_margin = game.get('home_pts', 0) - game.get('away_pts', 0)
+        
+        # cover_threshold = -market_spread (HOME convention)
+        cover_threshold = -market_spread
+        
+        # model_edge = pred_margin - cover_threshold
+        model_edge = pred_margin - cover_threshold
+        
+        # residual_vs_market = actual_margin - cover_threshold
+        residual_vs_market = actual_margin - cover_threshold
+        
+        calibration_data.append({
+            "game_id": game.get('game_id'),
+            "season": game.get('season', 'unknown'),
+            "pred_margin": round(pred_margin, 2),
+            "actual_margin": actual_margin,
+            "market_spread": market_spread,
+            "cover_threshold": round(cover_threshold, 2),
+            "model_edge": round(model_edge, 2),
+            "residual_vs_market": round(residual_vs_market, 2)
+        })
+    
+    if len(calibration_data) < min_games:
+        # Fallback: use games without market data, assume spread = 0
+        logger.warning(f"Only {len(calibration_data)} games with market data. Using synthetic spreads for remaining.")
+        
+        for game in games:
+            game_date = game['game_date']
+            home_abbr, away_abbr = game['home_team'], game['away_team']
+            
+            # Skip if already processed
+            if any(d['game_id'] == game.get('game_id') for d in calibration_data):
+                continue
+            
+            home_prev = [g for g in team_games.get(home_abbr, []) if g['game_date'] < game_date][-N:]
+            away_prev = [g for g in team_games.get(away_abbr, []) if g['game_date'] < game_date][-N:]
+            
+            if len(home_prev) < 5 or len(away_prev) < 5:
+                continue
+            
+            home_stats = await calculate_team_stats_from_games(home_abbr, home_prev)
+            away_stats = await calculate_team_stats_from_games(away_abbr, away_prev)
+            
+            if not home_stats or not away_stats:
+                continue
+            
+            home_rest = calculate_rest_days(game_date, home_prev)
+            away_rest = calculate_rest_days(game_date, away_prev)
+            
+            features = {
+                "diff_net_rating": home_stats['net_rating'] - away_stats['net_rating'],
+                "diff_pace": home_stats['pace'] - away_stats['pace'],
+                "diff_efg": home_stats['efg'] - away_stats['efg'],
+                "diff_tov_pct": home_stats['tov_pct'] - away_stats['tov_pct'],
+                "diff_orb_pct": home_stats['orb_pct'] - away_stats['orb_pct'],
+                "diff_ftr": home_stats['ftr'] - away_stats['ftr'],
+                "diff_rest": home_rest - away_rest,
+                "home_advantage": 1
+            }
+            
+            X = np.array([[features.get(col, 0) for col in feature_cols]])
+            
+            try:
+                X_scaled = scaler.transform(X)
+                pred_margin = float(model.predict(X_scaled)[0])
+            except Exception:
+                continue
+            
+            actual_margin = game.get('home_pts', 0) - game.get('away_pts', 0)
+            
+            # Use pred_margin as synthetic "market expectation" (spread = -pred_margin)
+            # This gives model_edge = 0, useful for estimating sigma_residual
+            market_spread = -pred_margin  # Synthetic: market = model
+            cover_threshold = -market_spread
+            model_edge = pred_margin - cover_threshold  # = 0
+            residual_vs_market = actual_margin - cover_threshold
+            
+            calibration_data.append({
+                "game_id": game.get('game_id'),
+                "season": game.get('season', 'unknown'),
+                "pred_margin": round(pred_margin, 2),
+                "actual_margin": actual_margin,
+                "market_spread": round(market_spread, 2),
+                "cover_threshold": round(cover_threshold, 2),
+                "model_edge": round(model_edge, 2),
+                "residual_vs_market": round(residual_vs_market, 2),
+                "synthetic_spread": True
+            })
+    
+    n_samples = len(calibration_data)
+    if n_samples < 50:
+        return {
+            "status": "insufficient_data",
+            "warning": f"Only {n_samples} valid samples for calibration",
+            "flags": ["INSUFFICIENT_DATA"]
+        }
+    
+    # Extract X (model_edge) and Y (residual_vs_market)
+    X_calib = np.array([d['model_edge'] for d in calibration_data])
+    Y_calib = np.array([d['residual_vs_market'] for d in calibration_data])
+    
+    # Linear regression: Y = alpha + beta * X
+    slope, intercept, r_value, p_value, std_err = scipy_stats.linregress(X_calib, Y_calib)
+    
+    beta = float(slope)
+    alpha = float(intercept)
+    r_squared = float(r_value ** 2)
+    
+    # Calculate residuals from the regression
+    Y_pred = alpha + beta * X_calib
+    regression_residuals = Y_calib - Y_pred
+    sigma_residual = float(np.std(regression_residuals))
+    mean_residual = float(np.mean(regression_residuals))
+    
+    # Update OPERATIONAL_CONFIG
+    OPERATIONAL_CONFIG["calibration"]["alpha"] = round(alpha, 4)
+    OPERATIONAL_CONFIG["calibration"]["beta"] = round(beta, 4)
+    OPERATIONAL_CONFIG["calibration"]["sigma_residual"] = round(sigma_residual, 2)
+    OPERATIONAL_CONFIG["calibration"]["calibration_source"] = "computed_vs_market"
+    
+    # Save to database
+    await db.model_calibration.update_one(
+        {"key": "vs_market"},
+        {"$set": {
+            "alpha": round(alpha, 4),
+            "beta": round(beta, 4),
+            "sigma_residual": round(sigma_residual, 2),
+            "r_squared": round(r_squared, 4),
+            "p_value": round(p_value, 6),
+            "std_err_beta": round(std_err, 4),
+            "n_samples": n_samples,
+            "n_with_real_spread": sum(1 for d in calibration_data if not d.get('synthetic_spread')),
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+            "model_version": model_doc.get('model_version'),
+            "calibration_source": "computed_vs_market",
+            "residual_stats": {
+                "mean": round(mean_residual, 2),
+                "std": round(sigma_residual, 2),
+                "min": round(float(np.min(regression_residuals)), 2),
+                "max": round(float(np.max(regression_residuals)), 2),
+                "percentiles": {
+                    "p25": round(float(np.percentile(regression_residuals, 25)), 2),
+                    "p50": round(float(np.percentile(regression_residuals, 50)), 2),
+                    "p75": round(float(np.percentile(regression_residuals, 75)), 2)
+                }
+            },
+            "model_edge_stats": {
+                "mean": round(float(np.mean(X_calib)), 2),
+                "std": round(float(np.std(X_calib)), 2),
+                "min": round(float(np.min(X_calib)), 2),
+                "max": round(float(np.max(X_calib)), 2)
+            }
+        }},
+        upsert=True
+    )
+    
+    # Generate flags
+    flags = []
+    if beta < 0.1:
+        flags.append("WARNING_BETA_NEAR_ZERO (model provides weak signal)")
+    if beta > 0.8:
+        flags.append("WARNING_BETA_HIGH (possible overfit or data leak)")
+    if abs(alpha) > 3:
+        flags.append(f"WARNING_ALPHA_BIAS ({alpha:.2f})")
+    if sigma_residual < 10:
+        flags.append("WARNING_SIGMA_RESIDUAL_LOW")
+    if sigma_residual > 20:
+        flags.append("WARNING_SIGMA_RESIDUAL_HIGH")
+    if r_squared < 0.01:
+        flags.append("WARNING_LOW_R_SQUARED (model edge explains little variance)")
+    if p_value > 0.05:
+        flags.append("WARNING_BETA_NOT_SIGNIFICANT (p > 0.05)")
+    
+    return {
+        "status": "completed",
+        "calibration_type": "vs_market",
+        "alpha": round(alpha, 4),
+        "beta": round(beta, 4),
+        "sigma_residual": round(sigma_residual, 2),
+        "r_squared": round(r_squared, 4),
+        "p_value": round(p_value, 6),
+        "std_err_beta": round(std_err, 4),
+        "n_samples": n_samples,
+        "n_with_real_spread": sum(1 for d in calibration_data if not d.get('synthetic_spread')),
+        "interpretation": {
+            "beta_meaning": "Shrinkage factor: how much the model's edge translates to actual edge",
+            "beta_value": f"beta={beta:.3f} means model's edge is {'overconfident' if beta < 1 else 'underconfident'}",
+            "alpha_meaning": "Systematic bias vs market",
+            "sigma_meaning": "Uncertainty in model vs market residuals"
+        },
+        "model_edge_stats": {
+            "mean": round(float(np.mean(X_calib)), 2),
+            "std": round(float(np.std(X_calib)), 2),
+            "min": round(float(np.min(X_calib)), 2),
+            "max": round(float(np.max(X_calib)), 2)
+        },
+        "flags": flags,
+        "computed_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@api_router.get("/admin/model/calibration")
+async def get_calibration(user=Depends(get_current_user)):
+    """Get current calibration (vs_market or legacy sigma)."""
+    # Try vs_market calibration first
+    vs_market = await db.model_calibration.find_one({"key": "vs_market"}, {"_id": 0})
+    sigma = await db.model_calibration.find_one({"key": "sigma"}, {"_id": 0})
+    
+    if vs_market:
+        return {
+            "calibration_type": "vs_market",
+            "vs_market": vs_market,
+            "legacy_sigma": sigma,
+            "active": "vs_market"
+        }
+    elif sigma:
+        return {
+            "calibration_type": "legacy_sigma",
+            "legacy_sigma": sigma,
+            "active": "legacy_sigma",
+            "warning": "Using legacy sigma calibration. Run /admin/model/calibrate-vs-market for better results."
+        }
+    else:
+        return {
+            "calibration_type": "default",
+            "warning": "No calibration found. Using defaults.",
+            "defaults": OPERATIONAL_CONFIG["calibration"]
+        }
+
 # ============= DEBUG ENDPOINT =============
 
 @api_router.get("/admin/debug/predict", response_model=DebugPrediction)
