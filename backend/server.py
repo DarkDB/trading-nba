@@ -1086,7 +1086,7 @@ async def recompute_sigma(season: str = None, user=Depends(get_current_user)):
         scaler.var_ = np.ones(len(model_doc.get('feature_columns', [])))
         scaler.n_features_in_ = len(model_doc.get('feature_columns', []))
     
-    feature_cols = model_doc['feature_columns']
+    feature_cols = model_doc.get('feature_columns') or list(model_doc.get('coefficients', {}).keys())
     
     # Get historical games with features
     query = {}
@@ -1640,7 +1640,7 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     import io
     model = joblib.load(io.BytesIO(model_doc['model_binary']))
     scaler = joblib.load(io.BytesIO(model_doc['scaler_binary']))
-    feature_cols = model_doc['feature_columns']
+    feature_cols = model_doc.get('feature_columns') or list(model_doc.get('coefficients', {}).keys())
     
     # Analyze all available predictions
     analysis_data = []
