@@ -338,15 +338,10 @@ def calculate_p_cover(pred_margin: float, cover_threshold: float, sigma: float, 
     """
     DEPRECATED: Old approach that modeled margin as N(pred_margin, sigma).
     Use calculate_p_cover_vs_market instead.
+    
+    Raises error if called - this function should not be used.
     """
-    if sigma <= 0:
-        sigma = 12.0
-    z = (pred_margin - cover_threshold) / sigma
-    if recommended_side == "HOME":
-        p_cover = normal_cdf(z)
-    else:
-        p_cover = normal_cdf(-z)
-    return round(p_cover, 4)
+    raise NotImplementedError("calculate_p_cover is DEPRECATED. Use calculate_p_cover_vs_market instead.")
 
 
 def calculate_p_cover_vs_market(
