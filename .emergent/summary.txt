@@ -1,82 +1,85 @@
 <analysis>**original_problem_statement:**
-El usuario solicitó construir una aplicación web full-stack llamada NBA Edge para operar desde España. El objetivo es predecir el margen de puntos en partidos de la NBA y compararlo con los spreads del mercado para encontrar value.
+El usuario solicitó construir una aplicación web full-stack llamada NBA Edge para operar desde España. El objetivo es predecir el margen de puntos en partidos de la NBA y compararlo con los spreads del mercado para encontrar value. La aplicación ha evolucionado para utilizar un enfoque basado en probabilidad (p_cover) y Valor Esperado (EV) para la selección de apuestas, en lugar de un simple edge en puntos.
 
 **PRODUCT REQUIREMENTS:**
-- **Stack:** FastAPI, Supabase (Postgres + Auth), React. (Nota: Se cambió a MongoDB por no tener Supabase disponible).
-- **Datos Históricos:** Usar  para las temporadas 2021-22 a 2024-25.
-- **Datos de Mercado:** Usar The Odds API para próximos partidos y líneas de spreads (formato decimal) de bookmakers específicos (Pinnacle como referencia).
-- **Modelo ML:** Ridge Regression con StandardScaler, entrenado con datos históricos, para predecir .
-- **Features:** Rolling window (N=15) de métricas de equipo (net_rating, pace, eFG%, etc.).
-- **Señal de Value:** Calculada como .
-- **Endpoints:** Endpoints de administrador para sincronización de datos y entrenamiento, y endpoints de usuario para ver partidos, generar picks y ver el historial.
-- **UI:** Dashboard profesional con secciones para Dataset, Train, Upcoming, Picks, History y Settings.
-- **Producción:** La aplicación debe estar lista para operar, con versionado de modelos, trazabilidad de apuestas (open/close line, CLV), filtros operativos y una UI clara para la toma de decisiones.
+- **Stack:** FastAPI, React, MongoDB.
+- **Datos:**  para datos históricos, The Odds API para cuotas de mercado.
+- **Modelo ML:** Ridge Regression para predecir el margen de puntos.
+- **Lógica de Picks (v2.0):**
+    - Calcular la incertidumbre del modelo (sigma) a partir de los residuales históricos.
+    - Usar sigma para calcular la probabilidad de cubrir el spread () para cada partido.
+    - Calcular el Valor Esperado ().
+    - Seleccionar picks basados en un umbral de EV positivo (ej. ).
+- **UI:** Un dashboard Live Ops para el flujo de trabajo diario: sincronizar datos, calcular sigma, generar picks y auditar la sanidad del modelo.
+- **Objetivo Final:** Calibrar correctamente el modelo (sigma) y validar su sanidad antes de iniciar una fase de paper trading de 7-14 días.
 
 **User's preferred language**: español
 
 **what currently exists?**
-Una aplicación full-stack funcional llamada NBA Edge. El backend está construido con FastAPI y usa MongoDB como base de datos. El frontend es una aplicación React con un dashboard profesional de modo oscuro.
+Una aplicación full-stack (FastAPI, React, MongoDB) que implementa un pipeline de predicción de partidos de la NBA. El sistema ha sido refactorizado a una versión 2.0 que utiliza probabilidad y Valor Esperado (EV) para la selección de apuestas.
 
-La aplicación implementa el ciclo completo:
-1.  Sincroniza datos históricos de la NBA.
-2.  Sincroniza próximos partidos y cuotas de mercado de The Odds API.
-3.  Entrena un modelo de Machine Learning (Ridge Regression) para predecir el margen de los partidos.
-4.  Genera picks (predicciones) comparando el margen predicho con el spread del mercado.
-5.  Implementa funcionalidades de producción: versionado de modelos (v1.0), cálculo de CLV (Closing Line Value), filtros operativos para picks, y una pantalla Live Ops para gestionar las operaciones diarias.
-6.  Incluye un conjunto de tests unitarios que validan el pipeline de predicción y las funcionalidades de producción.
+**Funcionalidades clave:**
+- Sincronización de datos históricos () y cuotas de mercado ().
+- Un endpoint para calcular la incertidumbre del modelo () a partir de datos históricos y guardarla en la base de datos.
+- Lógica de generación de picks que calcula  y  para cada partido.
+- Un endpoint de auditoría () para analizar la salud de las predicciones del modelo.
+- Un frontend con una página Live Ops para ejecutar el flujo diario y ver los resultados, incluyendo los nuevos reportes de auditoría y métricas de EV.
+- Se corrigió un bug crítico en la lógica de cover que recomendaba apuestas incorrectas.
 
 **Last working item**:
-- **Last item agent was working:** Implementación de un conjunto completo de características para hacer la aplicación production-ready, preparando la app para operar con picks reales. Esto incluyó:
-    1.  **Versionado de Modelos (V1.0):** Congelar la configuración del modelo (features, hiperparámetros) en la base de datos para cada versión.
-    2.  **Picks Operativos:** Añadir filtros (confianza, umbral de edge, max picks) y una explicación clara para cada pick.
-    3.  **CLV (Closing Line Value):** Implementar la captura de open line y close line para medir la calidad de los picks.
-    4.  **Métricas de Modelo:** Guardar y mostrar MAE/RMSE en la UI.
-    5.  **UI Live Ops:** Una nueva pantalla para facilitar el flujo de trabajo diario (sync, generar picks, etc.).
-    6.  **Seguridad y Tests:** Añadir reglas de  y tests unitarios para todas las nuevas funcionalidades.
-- **Status:** USER VERIFICATION PENDING
-- **Agent Testing Done:** Y
+- **Last item agent was working:** Finalizar la implementación de la Auditoría Cuantitativa y Cierre de Calibración (v2.0). El agente había sincronizado con éxito los datos históricos y ejecutado el endpoint , que calculó correctamente un  de **15.76** y lo guardó en la base de datos. Sin embargo, al ejecutar el endpoint de auditoría (), el agente descubrió que este **no estaba utilizando el  recién calculado**, sino que seguía usando el valor por defecto (12.0), lo que invalidaba el reporte de sanidad. El agente estaba a punto de depurar este problema.
+- **Status:** IN PROGRESS
+- **Agent Testing Done:** N
 - **Which testing method agent to use?** backend testing agent
 - **User Testing Done:** N
 
 **All Pending/In progress Issue list**:
-No hay issues pendientes identificados. El agente completó la última solicitud del usuario.
+- **Issue 1:** El endpoint de auditoría no utiliza el sigma calibrado de la base de datos. (P0 - BLOCKER)
+
+**Issues Detail:**
+- **Issue 1:**
+    - **Description:** El endpoint  no lee el valor de  actualizado desde la configuración guardada en la base de datos (). En su lugar, utiliza el valor  codificado en la variable  al inicio del fichero . Esto hace que el reporte de sanidad se genere con datos incorrectos y no refleje la calibración real del modelo.
+    - **Attempted fixes:** Ninguno. El problema acaba de ser identificado.
+    - **Next debug checklist:**
+        1.  Revisar la implementación de la función  en .
+        2.  Localizar dónde se obtiene el valor de .
+        3.  Modificar la función para que, al inicio, cargue la configuración operativa () desde la colección  de la base de datos.
+        4.  Utilizar el valor de  de esa configuración cargada para todos los cálculos dentro del endpoint.
+        5.  Verificar la corrección llamando de nuevo a  en el endpoint  y confirmar que el campo  es  y el valor de  es .
+    - **Why fix this issue and what will be achieved with the fix?** Es un blocker crítico. Sin esta corrección, es imposible validar si el modelo está correctamente calibrado, que es el objetivo principal del usuario. El reporte de sanidad es inútil si se basa en un  incorrecto.
+    - **Status:** NOT STARTED
+    - **Is recurring issue?** N
+    - **Should Test frontend/backend/both after fix?** backend
+    - **Blocked on other issue:** No
 
 **In progress Task List**:
-- **Task 1:** Validar el conjunto de características de producción implementadas.
-    - **Where to resume:** El usuario debe revisar la nueva pantalla Live Ops, la lógica de generación de picks en operative mode y la información de CLV en el historial para confirmar que todo funciona como se esperaba.
-    - **What will be achieved with this?** Confirmar que la aplicación está lista para su uso en un entorno de producción real.
-    - **Status:** USER VERIFICATION PENDING
-    - **Should Test frontend/backend/both after fix?** both
-    - **Blocked on something:** User feedback.
+No hay tareas en progreso más allá de la resolución del issue anterior.
 
 **Upcoming and Future Tasks**
 - **Upcoming Tasks:**
-    - **P0: Automatizar el seguimiento de resultados de los picks:** Actualmente, el último paso del  (revisar resultado y registrar covered/push/lost) es manual. Se podría crear un endpoint que, una vez finalizados los partidos, actualice automáticamente el estado de los picks.
+    - **P0: Completar la Auditoría Post-Calibración:** Una vez que el bug de sigma esté resuelto, re-ejecutar el endpoint  y presentar los resultados al usuario para su validación contra los criterios de aceptación que definió (e.g.,  entre -2% y +5%).
+    - **P1: Iniciar fase de Paper Trading:** Si el usuario aprueba la auditoría, el sistema estará listo para una fase de seguimiento de 7-14 días sin más cambios en el código.
 - **Future Tasks:**
-    - **P1: Implementar  real:** Actualmente se utiliza una media de la liga como placeholder. Se debería calcular a partir de los datos históricos para mejorar la precisión del modelo.
-    - **P2: Incluir más temporadas históricas:** Añadir más datos históricos al entrenamiento podría mejorar la robustez y el MAE del modelo.
-    - **P3: Monitorización de performance:** Implementar un dashboard o sistema de alertas para monitorear el rendimiento del modelo en producción (comparar predicciones con resultados reales a lo largo del tiempo).
-    - **P4: Notificaciones de picks:** Añadir un sistema de notificaciones (email o en la app) cuando se generan nuevos picks con value alto (edge ≥ 3.0).
+    - **P2: Implementar  real:** Reemplazar el placeholder actual con un cálculo basado en datos históricos para mejorar la precisión del modelo.
+    - **P3: Automatizar el seguimiento de resultados de los picks:** Crear un endpoint que actualice automáticamente el estado de los picks (ganado/perdido/push) una vez finalizados los partidos.
+    - **P4: Monitorización de performance:** Implementar un dashboard para monitorear el rendimiento del modelo a lo largo del tiempo.
 
 **Completed work in this session**
-- **MVP de la aplicación NBA Edge:** Se construyó la estructura inicial del backend (FastAPI), frontend (React) y la autenticación JWT.
-- **Auditoría y corrección del pipeline de predicción:**
-  - Se identificó y corrigió un bug crítico que causaba que todas las predicciones fueran constantes (+1.05). La causa raíz era que las  se estaban hardcodeando a cero en el endpoint de predicción.
-  - Se implementó un mapeo de nombres de equipos entre  y  para poder construir las features correctamente para los partidos futuros.
-  - Se añadieron tests unitarios para prevenir la regresión de este bug ().
-- **Validación completa del sistema:** Se ejecutó un checklist exhaustivo para validar la lógica de features, inferencia, cálculo de edge y no-leakage de datos, confirmando que el sistema era robusto.
-- **Implementación de funcionalidades de producción:**
-  - Se añadieron el versionado de modelos, el cálculo de CLV, filtros operativos, una pantalla Live Ops y un  para guiar la operativa.
-  - Se actualizaron los endpoints, modelos de base de datos y la UI para soportar estas nuevas características.
-  - Se crearon tests específicos para las nuevas funcionalidades de producción ().
+- **Corrección de Bug Crítico en Lógica de Cover:** Se solucionó un fallo fundamental que recomendaba apuestas que el modelo no cubría. Se reescribió la lógica para validar explícitamente que la predicción del modelo () superaba el umbral del spread () y se añadieron tests para evitar regresiones.
+- **Flexibilización de Límites de Picks:** Se eliminó el límite de , permitiendo ver todos los picks válidos del día en la UI, tal como solicitó el usuario para registro manual.
+- **Transición a Modelo v2.0 (Probabilidad + EV):**
+    - Se implementó un endpoint () para calcular la incertidumbre del modelo () a partir de datos históricos.
+    - Se refactorizó la generación de picks para calcular la probabilidad de cubrir el spread () y el Valor Esperado ().
+    - Se actualizó la UI para mostrar las nuevas métricas (p_cover, EV, etc.) y ordenar los picks por EV.
+- **Implementación de Auditoría Cuantitativa:**
+    - Se creó un endpoint () para generar un reporte de sanidad del modelo con métricas clave (distribución de , , ) y flags de alerta.
+    - Se añadieron tests de monotonicidad para asegurar la coherencia entre el  y .
+- **Corrección de Múltiples Bugs:** Se solucionaron varios errores en el backend (deserialización del modelo, nombres de funciones, , ) y en el frontend (error de JSX en ) que surgieron durante el desarrollo.
 
 **Earlier issues found/mentioned but not fixed**
 - **Issue 1: Placeholder para **.
-    - **Debug checklist:**
-        - El agente mencionó en un resumen ( message #107) que el  real no estaba implementado y se usaba un promedio de la liga.
-        - Revisar  en la función de construcción de features para localizar el placeholder.
-        - Implementar el cálculo correcto usando los datos de .
-    - **Why to solve this issue and what will be achieved with this?** Reemplazar el placeholder con un cálculo real mejorará la calidad de las features y, potencialmente, la precisión del modelo de predicción.
+    - **Debug checklist:** Revisar la función de construcción de features en  para reemplazar el promedio de la liga por un cálculo real basado en .
+    - **Why to solve this issue and what will be achieved with this?** Mejorará la calidad de las features y, potencialmente, la precisión del modelo.
     - **Should Test frontend/backend/both after fix:** backend
     - **Is recurring issue?** N
 
@@ -90,88 +93,77 @@ No hay issues pendientes identificados. El agente completó la última solicitud
 - **Backend:** FastAPI, Pydantic
 - **Frontend:** React, React Router, Tailwind CSS, Shadcn/UI
 - **Database:** MongoDB
-- **Authentication:** JWT (JSON Web Tokens)
-- **ML Model:** Scikit-learn (Ridge Regression, StandardScaler)
-- **Data Sources:**  (Python library), The Odds API (REST)
+- **ML Model:** Scikit-learn (Ridge Regression)
+- **Model Calibration:** Cálculo de incertidumbre () a partir de residuales históricos.
+- **Betting Logic:**  (Probabilidad de cubrir ATS) usando la Normal CDF, y  (Expected Value).
 
 **key DB schema**
 - **users:** 
 - **models:** 
-- **upcoming_events:** 
-- **market_lines:** 
 - **predictions:** 
-- **games, team_game_stats, game_features:** Colecciones para almacenar datos históricos y features de entrenamiento.
+- **settings:** 
 
 **changes in tech stack**
-- El usuario solicitó **Supabase (PostgreSQL)**, pero como no estaba disponible en el entorno, el agente cambió a **MongoDB**. Toda la implementación de la base de datos se ha realizado con MongoDB.
+- None.
 
 **All files of reference**
-- : El archivo principal del backend. Contiene todos los endpoints, la lógica de negocio, el entrenamiento del modelo y la interacción con la base de datos. Fue modificado extensamente para corregir bugs y añadir funcionalidades de producción.
-- : Tests unitarios creados para asegurar que el pipeline de predicción no tenga regresiones (ej: predicciones constantes).
-- : Tests unitarios creados para validar las nuevas funcionalidades de producción (CLV, filtros operativos, etc.).
-- : Nueva página de UI para centralizar las operaciones diarias.
-- , : Actualizadas para mostrar datos de CLV y producción.
-- , : Actualizados para incluir la nueva ruta a Live Ops.
-- : Documento que describe el flujo de trabajo operativo diario para usar la aplicación.
-- : Documento con los requisitos del producto.
+- : Archivo principal del backend, modificado extensamente para la lógica v2.0 (sigma, EV, audit).
+- : Actualizado con tests para la lógica de probabilidad, EV y monotonicidad.
+- : Actualizado para mostrar las nuevas métricas de auditoría, EV, p_cover y el botón para recalcular sigma.
+- : Actualizado para reflejar la transición a la v2.0 y el estado de la calibración.
 
 **Areas that need refactoring**:
-- El archivo  es muy grande y contiene casi toda la lógica del backend (endpoints, servicios de datos, lógica de ML, autenticación). Podría ser refactorizado dividiendo la lógica en módulos de servicio más pequeños (ej: , , ) como se planeó inicialmente.
+-  sigue siendo un archivo monolítico que contiene lógica de endpoints, servicios, ML y autenticación. Podría dividirse en módulos más pequeños para mejorar la mantenibilidad.
 
 **key api endpoints**
 - **Admin:**
   - 
-  - 
-  - 
-  - 
-  - 
-  - 
-  - 
+  -  (Nuevo)
+  -  (Nuevo)
 - **User:**
-  - 
-  -  (Login)
-  - 
-  - 
-  - 
+  -  (Actualizado a v2.0)
 
 **Critical Info for New Agent**
-- El stack de base de datos se cambió de Supabase/Postgres a **MongoDB** debido a limitaciones del entorno. Toda la lógica de la base de datos está escrita para MongoDB.
-- El bug más crítico de la aplicación fue que el modelo devolvía predicciones constantes. Se solucionó implementando la construcción de features en tiempo real para partidos futuros y un mapeo de nombres de equipos. El código relevante y los tests de prevención están en  y .
-- La aplicación ha sido actualizada a una versión de producción (v1.0), que incluye versionado de modelos, cálculo de CLV y una UI/workflow operativo. El punto de entrada para el trabajo diario es la nueva pantalla Live Ops.
-- La API key para  está en .
+- **El Blocker Actual:** La tarea más importante es arreglar el endpoint  para que use el  de la base de datos. Sin esto, no se puede avanzar.
+- **Flujo de Calibración:** El flujo correcto definido por el usuario es: 1) , 2) , 3) . Este último paso es el que falla.
+- **Criterios de Aceptación:** El usuario ha definido criterios cuantitativos claros para aceptar la calibración del modelo (e.g.,  entre -2% y +5%). El objetivo es cumplir esos criterios.
+- **Sigma Default vs. Real:** El  por defecto (12.0) produce EVs y  irrealmente altos. El  calibrado (15.76) debería producir valores más razonables. La diferencia entre los reportes generados por ambos sigmas es la clave del problema actual.
 
 **documents and test reports created in this job**
 - 
 - 
-- 
+-  (actualizado múltiples veces)
 
 **Last 10 User Messages and any pending HUMAN messages**
-1.  **User Message #141:** Solicitud para preparar la app para producción. Pide versionado de modelos, CLV, filtros operativos, una UI Live Ops, tests y un runbook. **(COMPLETED)**
-2.  **User Message #108:** Solicitud de una validación final y objetiva del sistema, con evidencias concretas para cada parte del pipeline (features, inferencia, edge, no-leakage) y un checklist final. **(COMPLETED)**
-3.  **User Message #102:** Aprobación de la UI con predicciones variadas. Pide actualizar el frontend para mostrar más detalles como la confianza. **(COMPLETED)**
-4.  **User Message #72:** Reporte de bug crítico: el sistema devuelve la misma predicción (+1.1) para todos los partidos. Pide una auditoría y depuración completa del pipeline de predicción. **(COMPLETED)**
-5.  **User Message #71:** Agente finaliza la primera versión del MVP. **(COMPLETED)**
-6.  **User Message #5:** Respuesta a la pregunta inicial del agente. El usuario indica que no tiene Supabase, proporciona la API key de Odds, y prefiere autenticación simple y un dashboard profesional. **(COMPLETED)**
+1.  **User:** Pide cierre de calibración y sanity checks. Detalla los requisitos para  y , incluyendo métricas específicas y tests.
+2.  **Agent:** Entiende y empieza a implementar la calibración y el reporte.
+3.  **Agent:** Implementa los cambios en  y los tests.
+4.  **Agent:** Arregla una serie de errores en el backend (, ) relacionados con la carga del modelo y el mapeo de nombres de equipos en el nuevo endpoint de auditoría.
+5.  **Agent:** Logra que el endpoint de auditoría se ejecute pero nota que los resultados (EVs, p_cover) son demasiado altos. Concluye que se debe a que  sigue siendo el valor por defecto (12.0).
+6.  **User:** Pide explícitamente ejecutar el flujo de calibración: 1) Sincronizar históricos, 2) Recalcular sigma, 3) Re-ejecutar la auditoría. Define criterios de aceptación claros para el  calibrado.
+7.  **Agent:** Ejecuta el paso 1 (sync) y 2 (recompute sigma), obteniendo con éxito un  de 15.76.
+8.  **Agent:** Ejecuta el paso 3 (auditoría) y descubre el bug crítico: el reporte sigue usando .
+9.  **User (Previous):** Pide una auditoría cuantitativa para investigar si el modelo está sobreestimando márgenes.
+10. **User (Previous):** Pide un cambio mínimo para quitar el límite de picks por día y poder registrar más apuestas manualmente.
 
 **Project Health Check:**
-- **Broken:** Ninguna funcionalidad principal parece estar rota. Los tests pasan.
+- **Broken:**
+    - La funcionalidad de auditoría del modelo () está rota, ya que no utiliza el valor de  correcto.
 - **Mocked:**
-  - : Se utiliza un promedio de la liga en lugar de un cálculo basado en datos históricos. Es una simplificación conocida que podría afectar la precisión del modelo.
+    -  sigue siendo un placeholder (promedio de la liga).
 
 **3rd Party Integrations**
-- **The Odds API:** Se utiliza para obtener información sobre próximos partidos y las líneas de apuestas (spreads) del mercado. La clave de API es proporcionada por el usuario.
-- **nba_api (stats.nba.com):** Se utiliza a través de una librería Python para descargar estadísticas y resultados históricos de partidos para el entrenamiento del modelo.
+- **The Odds API:** Para cuotas de mercado.
+- **nba_api:** Para datos históricos de la NBA.
 
 **Testing status**
-- **Testing agent used after significant changes:** YES (para el MVP inicial)
+- **Testing agent used after significant changes:** NO (en el último ciclo de desarrollo)
 - **Troubleshoot agent used after agent stuck in loop:** NO
-- **Test files created:**
-  - 
-  - 
-- **Known regressions:** None
+- **Test files created:**  fue actualizado con 20 tests, incluyendo validaciones para la nueva lógica de probabilidad, EV y monotonicidad.
+- **Known regressions:** None.
 
 **Credentials to test flow:**
-No se necesitan credenciales fijas. El flujo de registro crea un nuevo usuario. La API key de The Odds API está configurada en el entorno.
+No se necesitan. El registro de usuario crea uno nuevo. La API key de The Odds API está en el entorno.
 
 **What agent forgot to execute**
-El agente parece haber cubierto todos los puntos de la última y más compleja solicitud del usuario. No se identificaron tareas olvidadas de ese request. La única tarea pendiente es una mejora mencionada en un resumen anterior (implementar  real), que ahora está listada como tarea futura.</analysis>
+El agente no olvidó, sino que implementó incorrectamente una parte de la lógica. El endpoint de auditoría no fue conectado para leer la configuración de  desde la base de datos, lo cual es el bug principal a resolver.</analysis>
