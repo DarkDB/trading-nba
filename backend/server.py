@@ -377,14 +377,17 @@ def calculate_p_cover_vs_market(
         model_edge: pred_margin - cover_threshold
         alpha: calibrated intercept
         beta: calibrated slope (shrinkage)
-        sigma_residual: calibrated std of residuals vs market
+        sigma_residual: calibrated std of residuals vs market (MUST NOT be 12.0)
         recommended_side: "HOME" or "AWAY"
     
     Returns:
         (p_cover, z_score)
+    
+    Raises:
+        ValueError if sigma_residual is invalid
     """
-    if sigma_residual <= 0:
-        sigma_residual = 12.0
+    if sigma_residual <= 0 or sigma_residual == 12.0:
+        raise ValueError(f"Invalid sigma_residual={sigma_residual}. Must be positive and not legacy default 12.0")
     
     # Expected value of residual vs market
     mu = beta * model_edge + alpha
