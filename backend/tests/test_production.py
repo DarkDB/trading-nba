@@ -512,6 +512,60 @@ def test_p_cover_boundary_cases():
     p_2sigma = calculate_p_cover(5.0 + 2*sigma, threshold, sigma, "HOME")
     assert p_2sigma > 0.97
 
+def test_monotonicity_by_side():
+    """
+    Test coherence of p_cover monotonicity BY SIDE:
+    - For HOME: raw_edge_signed ↑ => p_cover ↑
+    - For AWAY: raw_edge_signed ↓ => p_cover ↑
+    """
+    import math
+    
+    def normal_cdf(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    
+    def calculate_p_cover(pred_margin, cover_threshold, sigma, recommended_side):
+        z = (pred_margin - cover_threshold) / sigma
+        if recommended_side == "HOME":
+            return normal_cdf(z)
+        else:
+            return normal_cdf(-z)
+    
+    sigma = 12.0
+    threshold = 5.0  # spread=-5.0
+    
+    # Test HOME side: higher pred_margin (higher raw_edge) => higher p_cover
+    # raw_edge_signed = pred_margin - threshold
+    pred_margins_home = [6, 8, 10, 15, 20]
+    p_covers_home = [calculate_p_cover(pm, threshold, sigma, "HOME") for pm in pred_margins_home]
+    
+    for i in range(len(p_covers_home) - 1):
+        assert p_covers_home[i] < p_covers_home[i+1], \
+            f"HOME: p_cover should increase with pred_margin. Got {p_covers_home}"
+    
+    # Test AWAY side: lower pred_margin (lower raw_edge) => higher p_cover
+    pred_margins_away = [4, 2, 0, -2, -5]  # Decreasing
+    p_covers_away = [calculate_p_cover(pm, threshold, sigma, "AWAY") for pm in pred_margins_away]
+    
+    for i in range(len(p_covers_away) - 1):
+        assert p_covers_away[i] < p_covers_away[i+1], \
+            f"AWAY: p_cover should increase as pred_margin decreases. Got {p_covers_away}"
+    
+    # Verify raw_edge_signed relationship
+    # HOME: raw_edge = pred - threshold, higher is better
+    # AWAY: raw_edge = pred - threshold, lower is better (more negative)
+    raw_edges_home = [pm - threshold for pm in pred_margins_home]
+    raw_edges_away = [pm - threshold for pm in pred_margins_away]
+    
+    # For HOME: raw_edge ↑ => p_cover ↑
+    for i in range(len(raw_edges_home) - 1):
+        assert raw_edges_home[i] < raw_edges_home[i+1]  # raw_edge increasing
+        assert p_covers_home[i] < p_covers_home[i+1]    # p_cover increasing
+    
+    # For AWAY: raw_edge ↓ => p_cover ↑
+    for i in range(len(raw_edges_away) - 1):
+        assert raw_edges_away[i] > raw_edges_away[i+1]  # raw_edge decreasing
+        assert p_covers_away[i] < p_covers_away[i+1]    # p_cover increasing
+
 # ============= 8) METRICS TESTS =============
 
 def test_metrics_structure():
