@@ -110,7 +110,7 @@ export default function LiveOps() {
           response = await adminApi.syncOdds(2);
           break;
         case 'generate-picks':
-          response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/picks/generate?operative_mode=${operativeMode}`, {
+          response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/picks/generate`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}`,
@@ -118,10 +118,14 @@ export default function LiveOps() {
             }
           });
           response = await response.json();
-          if (response.picks) {
-            setAllPicks(response.all_picks || response.picks);
-            setOperativePicks(operativeMode ? response.picks : response.picks.filter(p => !p.do_not_bet));
-            toast.success(`Generated ${response.count} picks (${response.total_analyzed || response.count} analyzed)`);
+          if (response.status === 'success') {
+            setPicksByTier(response.tiers || { A: [], B: [], C: [] });
+            setAllPicks(response.all_picks || []);
+            setPicksSummary(response.summary);
+            toast.success(`Paper Trading v3.0: ${response.summary?.tier_a_count || 0} Tier A, ${response.summary?.tier_b_count || 0} Tier B, ${response.summary?.tier_c_count || 0} Tier C`);
+            return;
+          } else if (response.detail) {
+            toast.error(response.detail);
             return;
           }
           break;
