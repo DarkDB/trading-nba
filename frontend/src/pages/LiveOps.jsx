@@ -770,46 +770,46 @@ export default function LiveOps() {
         </CardContent>
       </Card>
 
-      {/* Today's Picks */}
+      {/* Today's Picks from Selected Tier */}
       <Card className="bg-card border-border border-green-500/30">
         <CardHeader>
           <CardTitle className="font-headings text-xl text-white flex items-center gap-2">
             <Target className="w-5 h-5 text-green-500" />
-            Today's Picks ({todayPicks.length})
+            Today's Tier {selectedTier} Picks ({todayPicks.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
           {todayPicks.length === 0 ? (
             <div className="text-center py-8 text-zinc-500">
-              No hay picks operativos para hoy
+              No hay picks de Tier {selectedTier} para hoy
             </div>
           ) : (
             <div className="space-y-4">
               {todayPicks.map((pick) => (
-                <PickCard key={pick.id} pick={pick} getSignalBadge={getSignalBadge} />
+                <PickCard key={pick.id} pick={pick} getTierBadge={getTierBadge} />
               ))}
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Tomorrow's Picks */}
+      {/* Tomorrow's Picks from Selected Tier */}
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle className="font-headings text-xl text-white flex items-center gap-2">
             <Calendar className="w-5 h-5 text-secondary" />
-            Tomorrow's Picks ({tomorrowPicks.length})
+            Tomorrow's Tier {selectedTier} Picks ({tomorrowPicks.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
           {tomorrowPicks.length === 0 ? (
             <div className="text-center py-8 text-zinc-500">
-              No hay picks operativos para mañana
+              No hay picks de Tier {selectedTier} para mañana
             </div>
           ) : (
             <div className="space-y-4">
               {tomorrowPicks.map((pick) => (
-                <PickCard key={pick.id} pick={pick} getSignalBadge={getSignalBadge} />
+                <PickCard key={pick.id} pick={pick} getTierBadge={getTierBadge} />
               ))}
             </div>
           )}
