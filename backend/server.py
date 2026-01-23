@@ -2042,11 +2042,13 @@ async def generate_picks(
             "operative_mode": True,
             "probability_mode": probability_mode,
             "calibration": {
-                "type": calibration_type,
+                "calibration_id": calibration_id,
                 "alpha_used": alpha,
                 "beta_used": beta,
                 "sigma_used": sigma_residual,
-                "beta_source": beta_source
+                "beta_source": beta_source,
+                "sigma_source": sigma_source,
+                "computed_at": calibration_computed_at
             },
             "filters_applied": OPERATIONAL_CONFIG['operative_thresholds']
         }
@@ -2057,11 +2059,13 @@ async def generate_picks(
             "operative_mode": False,
             "probability_mode": probability_mode,
             "calibration": {
-                "type": calibration_type,
+                "calibration_id": calibration_id,
                 "alpha_used": alpha,
                 "beta_used": beta,
                 "sigma_used": sigma_residual,
-                "beta_source": beta_source
+                "beta_source": beta_source,
+                "sigma_source": sigma_source,
+                "computed_at": calibration_computed_at
             }
         }
 
