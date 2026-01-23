@@ -1502,32 +1502,53 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         sigma_residual = sigma_from_model
         beta_source = f"default_insufficient_spread_data (n={n_with_spread})"
     
-    # Update OPERATIONAL_CONFIG
-    OPERATIONAL_CONFIG["calibration"]["alpha"] = round(alpha, 4)
-    OPERATIONAL_CONFIG["calibration"]["beta"] = round(beta, 4)
-    OPERATIONAL_CONFIG["calibration"]["sigma_residual"] = round(sigma_residual, 2)
-    OPERATIONAL_CONFIG["calibration"]["calibration_source"] = "computed_vs_market"
+    # Generate calibration_id
+    calibration_id = f"calib_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    computed_at = datetime.now(timezone.utc).isoformat()
     
-    # Save to database
+    # Deactivate any previous active calibration
+    await db.calibrations.update_many(
+        {"is_active": True},
+        {"$set": {"is_active": False}}
+    )
+    
+    # Save new calibration as active (not locked by default)
+    calibration_doc = {
+        "calibration_id": calibration_id,
+        "probability_mode": "VS_MARKET",
+        "alpha": round(alpha, 4),
+        "beta": round(beta, 4),
+        "sigma_residual": round(sigma_residual, 2),
+        "beta_source": beta_source,
+        "sigma_source": "historical_residuals",
+        "n_spread_samples": n_with_spread,
+        "n_residual_samples": n_total,
+        "r_squared": round(r_squared, 4) if r_squared > 0 else None,
+        "p_value": round(p_value, 6) if p_value != 1.0 else None,
+        "computed_at": computed_at,
+        "data_cutoff": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "model_version": model_doc.get('model_version'),
+        "is_active": True,
+        "is_locked": False,
+        "model_residual_stats": {
+            "mean": round(mean_residual_model, 2),
+            "std": round(sigma_from_model, 2),
+        }
+    }
+    
+    await db.calibrations.insert_one(calibration_doc)
+    
+    # Also update the legacy key for backward compatibility
     await db.model_calibration.update_one(
         {"key": "vs_market"},
         {"$set": {
+            "calibration_id": calibration_id,
             "alpha": round(alpha, 4),
             "beta": round(beta, 4),
             "sigma_residual": round(sigma_residual, 2),
-            "r_squared": round(r_squared, 4),
-            "p_value": round(p_value, 6) if p_value != 1.0 else None,
-            "std_err_beta": round(std_err, 4) if std_err > 0 else None,
-            "n_samples": n_total,
-            "n_with_spread": n_with_spread,
             "beta_source": beta_source,
-            "computed_at": datetime.now(timezone.utc).isoformat(),
+            "computed_at": computed_at,
             "model_version": model_doc.get('model_version'),
-            "calibration_source": "computed_vs_market",
-            "model_residual_stats": {
-                "mean": round(mean_residual_model, 2),
-                "std": round(sigma_from_model, 2),
-            }
         }},
         upsert=True
     )
@@ -1549,27 +1570,95 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     
     return {
         "status": "completed",
-        "calibration_type": "vs_market",
+        "calibration_id": calibration_id,
+        "probability_mode": "VS_MARKET",
         "alpha": round(alpha, 4),
         "beta": round(beta, 4),
         "sigma_residual": round(sigma_residual, 2),
         "beta_source": beta_source,
+        "sigma_source": "historical_residuals",
+        "n_spread_samples": n_with_spread,
+        "n_residual_samples": n_total,
         "r_squared": round(r_squared, 4) if r_squared > 0 else None,
-        "n_samples": n_total,
-        "n_with_spread": n_with_spread,
-        "interpretation": {
-            "beta_meaning": "Shrinkage factor: how much the model's edge translates to actual edge",
-            "beta_value": f"beta={beta:.3f} means model's raw edge is shrunk by {(1-beta)*100:.0f}%",
-            "alpha_meaning": "Systematic bias vs market",
-            "sigma_meaning": "Uncertainty in model vs market residuals"
-        },
-        "model_residual_stats": {
-            "mean": round(mean_residual_model, 2),
-            "std": round(sigma_from_model, 2),
-        },
-        "flags": flags,
-        "computed_at": datetime.now(timezone.utc).isoformat()
+        "computed_at": computed_at,
+        "data_cutoff": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "model_version": model_doc.get('model_version'),
+        "is_active": True,
+        "is_locked": False,
+        "flags": flags
     }
+
+
+@api_router.get("/admin/calibration/current")
+async def get_current_calibration(user=Depends(get_current_user)):
+    """
+    Get the currently active calibration with full audit info.
+    This is the single source of truth for all probability calculations.
+    """
+    # Get active calibration from DB
+    calibration = await db.calibrations.find_one(
+        {"is_active": True},
+        {"_id": 0}
+    )
+    
+    if not calibration:
+        return {
+            "error": "NO_ACTIVE_CALIBRATION",
+            "message": "No active calibration found. Run POST /api/admin/model/calibrate-vs-market first.",
+            "is_auditable": False
+        }
+    
+    # Verify all required fields are present
+    required_fields = ["calibration_id", "probability_mode", "alpha", "beta", "sigma_residual", 
+                       "beta_source", "computed_at", "model_version"]
+    missing_fields = [f for f in required_fields if f not in calibration or calibration[f] is None]
+    
+    if missing_fields:
+        return {
+            "error": "INCOMPLETE_CALIBRATION",
+            "message": f"Calibration missing required fields: {missing_fields}",
+            "is_auditable": False,
+            "calibration": calibration
+        }
+    
+    # Validate sigma is not 12.0 (legacy default)
+    if calibration.get("sigma_residual") == 12.0:
+        return {
+            "error": "LEGACY_SIGMA_DETECTED",
+            "message": "sigma_residual=12.0 is legacy default. Re-run calibration.",
+            "is_auditable": False,
+            "calibration": calibration
+        }
+    
+    return {
+        "calibration_id": calibration["calibration_id"],
+        "probability_mode": calibration["probability_mode"],
+        "alpha": calibration["alpha"],
+        "beta": calibration["beta"],
+        "sigma_residual": calibration["sigma_residual"],
+        "beta_source": calibration.get("beta_source", "unknown"),
+        "sigma_source": calibration.get("sigma_source", "unknown"),
+        "n_spread_samples": calibration.get("n_spread_samples", 0),
+        "n_residual_samples": calibration.get("n_residual_samples", 0),
+        "computed_at": calibration["computed_at"],
+        "data_cutoff": calibration.get("data_cutoff"),
+        "model_version": calibration["model_version"],
+        "is_active": calibration["is_active"],
+        "is_locked": calibration.get("is_locked", False),
+        "is_auditable": True
+    }
+
+
+@api_router.post("/admin/calibration/lock")
+async def lock_calibration(calibration_id: str, user=Depends(get_current_user)):
+    """Lock a calibration to prevent accidental recalculation."""
+    result = await db.calibrations.update_one(
+        {"calibration_id": calibration_id},
+        {"$set": {"is_locked": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Calibration not found")
+    return {"status": "locked", "calibration_id": calibration_id}
 
 
 @api_router.get("/admin/model/calibration")
