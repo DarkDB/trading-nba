@@ -378,11 +378,11 @@ export default function LiveOps() {
                   </div>
                   <div>
                     <span className="text-zinc-500 block">k</span>
-                    <span className="text-zinc-300 font-mono">{activeCalibration.k_shrinkage}</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.k_used}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500 block">w</span>
-                    <span className="text-zinc-300 font-mono">{activeCalibration.w_shrinkage?.toFixed(4)}</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.w_used?.toFixed(4)}</span>
                     {activeCalibration.beta_clamped && (
                       <Badge className="ml-1 text-[8px] bg-yellow-500/20 text-yellow-400">CLAMPED</Badge>
                     )}
