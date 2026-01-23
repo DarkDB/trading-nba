@@ -578,15 +578,31 @@ export default function LiveOps() {
 
             {/* Model Info */}
             <div>
-              <h4 className="text-sm font-bold text-zinc-400 mb-3 uppercase">Model Info</h4>
+              <h4 className="text-sm font-bold text-zinc-400 mb-3 uppercase">Model & Calibration Info</h4>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                 <div>
-                  <span className="text-zinc-500">Version:</span>
-                  <span className="text-white ml-2 font-data">{auditReport.model_info?.model_version}</span>
+                  <span className="text-zinc-500">calibration_id:</span>
+                  <span className="text-green-400 ml-2 font-mono text-xs">{auditReport.calibration_id}</span>
                 </div>
                 <div>
-                  <span className="text-zinc-500">Intercept:</span>
-                  <span className="text-white ml-2 font-data">{auditReport.model_info?.intercept}</span>
+                  <span className="text-zinc-500">β (beta):</span>
+                  <span className="text-blue-400 ml-2 font-data font-bold">{auditReport.model_info?.calibration?.beta_used?.toFixed(4)}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">σ (sigma):</span>
+                  <span className="text-blue-400 ml-2 font-data font-bold">{auditReport.model_info?.calibration?.sigma_used?.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">alpha:</span>
+                  <span className="text-white ml-2 font-data">{auditReport.model_info?.calibration?.alpha_used?.toFixed(4)}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">Model Version:</span>
+                  <span className="text-white ml-2 font-data text-xs">{auditReport.model_info?.model_version}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">beta_source:</span>
+                  <span className="text-zinc-300 ml-2 font-mono text-xs">{auditReport.model_info?.calibration?.beta_source}</span>
                 </div>
                 <div>
                   <span className="text-zinc-500">MAE:</span>
