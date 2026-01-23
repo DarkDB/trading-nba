@@ -2195,37 +2195,41 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     scaler = model_data['scaler']
     feature_cols = model_data['features']
     
-    # Get VS_MARKET calibration - REQUIRED, no fallback
-    vs_market_doc = await db.model_calibration.find_one({"key": "vs_market"}, {"_id": 0})
+    # Get ACTIVE calibration from DB - REQUIRED, no fallback
+    calibration = await db.calibrations.find_one({"is_active": True}, {"_id": 0})
     
-    if not vs_market_doc:
+    if not calibration:
         return {
-            "error": "VS_MARKET calibration not found",
-            "flags": ["NO_VS_MARKET_CALIBRATION"],
-            "action_required": "Run POST /api/admin/model/calibrate-vs-market first"
+            "error": "No active calibration found",
+            "flags": ["NO_ACTIVE_CALIBRATION"],
+            "action_required": "Run POST /api/admin/model/calibrate-vs-market first",
+            "is_auditable": False
         }
     
     # Extract calibration parameters - no defaults allowed
-    alpha = vs_market_doc.get('alpha')
-    beta = vs_market_doc.get('beta')
-    sigma_residual = vs_market_doc.get('sigma_residual')
-    beta_source = vs_market_doc.get('beta_source', 'unknown')
+    calibration_id = calibration.get('calibration_id')
+    alpha = calibration.get('alpha')
+    beta = calibration.get('beta')
+    sigma_residual = calibration.get('sigma_residual')
+    beta_source = calibration.get('beta_source', 'unknown')
+    sigma_source = calibration.get('sigma_source', 'unknown')
+    calibration_computed_at = calibration.get('computed_at')
+    probability_mode = calibration.get('probability_mode', 'VS_MARKET')
     
-    if alpha is None or beta is None or sigma_residual is None:
+    if calibration_id is None or alpha is None or beta is None or sigma_residual is None:
         return {
-            "error": f"Invalid VS_MARKET calibration: alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}",
-            "flags": ["INVALID_CALIBRATION"]
+            "error": f"Invalid calibration: calibration_id={calibration_id}, alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}",
+            "flags": ["INVALID_CALIBRATION"],
+            "is_auditable": False
         }
     
     # Validate sigma_residual is not the forbidden 12.0 default
     if sigma_residual == 12.0:
         return {
             "error": "sigma_residual=12.0 detected (legacy default). Re-run calibration.",
-            "flags": ["LEGACY_SIGMA_DETECTED"]
+            "flags": ["LEGACY_SIGMA_DETECTED"],
+            "is_auditable": False
         }
-    
-    calibration_type = "VS_MARKET"
-    probability_mode = "VS_MARKET"
     
     # Analyze predictions
     analysis_data = []
