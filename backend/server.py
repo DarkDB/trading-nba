@@ -1719,14 +1719,20 @@ async def get_current_calibration(user=Depends(get_current_user)):
         "alpha": calibration["alpha"],
         "beta": calibration["beta"],
         "sigma_residual": calibration["sigma_residual"],
-        # Shrinkage details
+        # Effective values (aliases)
+        "beta_effective": calibration.get("beta_effective", calibration["beta"]),
+        "alpha_effective": calibration.get("alpha_effective", calibration["alpha"]),
+        # Raw regression values
         "beta_reg": calibration.get("beta_reg"),
-        "beta_prior": calibration.get("beta_prior"),
         "alpha_reg": calibration.get("alpha_reg"),
+        # Prior values
+        "beta_prior": calibration.get("beta_prior"),
         "alpha_prior": calibration.get("alpha_prior"),
-        "k_shrinkage": calibration.get("k_shrinkage"),
-        "w_shrinkage": calibration.get("w_shrinkage"),
+        # Shrinkage parameters
+        "k_used": calibration.get("k_used") or calibration.get("k_shrinkage"),
+        "w_used": calibration.get("w_used") or calibration.get("w_shrinkage"),
         "beta_clamped": calibration.get("beta_clamped", False),
+        "alpha_clamped": calibration.get("alpha_clamped", False),
         # Source info
         "beta_source": calibration.get("beta_source", "unknown"),
         "sigma_source": calibration.get("sigma_source", "unknown"),
@@ -1737,7 +1743,7 @@ async def get_current_calibration(user=Depends(get_current_user)):
         "model_version": calibration["model_version"],
         "is_active": calibration["is_active"],
         "is_locked": calibration.get("is_locked", False),
-        "is_auditable": True
+        "is_auditable": calibration.get("is_auditable", True)
     }
 
 
