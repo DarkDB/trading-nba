@@ -19,7 +19,9 @@ import {
   Calendar,
   DollarSign,
   BarChart3,
-  AlertOctagon
+  AlertOctagon,
+  Lock,
+  Unlock
 } from 'lucide-react';
 
 export default function LiveOps() {
@@ -27,6 +29,7 @@ export default function LiveOps() {
   const [allPicks, setAllPicks] = useState([]);
   const [modelInfo, setModelInfo] = useState(null);
   const [auditReport, setAuditReport] = useState(null);
+  const [activeCalibration, setActiveCalibration] = useState(null);
   const [showAudit, setShowAudit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState({});
@@ -36,6 +39,18 @@ export default function LiveOps() {
     loadData();
   }, []);
 
+  const loadActiveCalibration = async () => {
+    try {
+      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/calibration/current`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
+      });
+      const data = await response.json();
+      setActiveCalibration(data);
+    } catch (e) {
+      console.error('Error loading calibration:', e);
+    }
+  };
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -43,6 +58,9 @@ export default function LiveOps() {
         userApi.getPicks(),
         statsApi.getModel(),
       ]);
+      
+      // Also load active calibration
+      await loadActiveCalibration();
       
       const picks = picksRes.data.picks || [];
       setAllPicks(picks);
