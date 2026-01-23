@@ -1978,13 +1978,15 @@ async def generate_picks(
             "adjusted_edge": round(adjusted_edge, 2),
             "betting_edge": round(edge_points, 2),
             "edge_points": round(edge_points, 2),
-            # VS_MARKET Calibration audit (REQUIRED)
+            # VS_MARKET Calibration audit (REQUIRED for trazabilidad)
+            "calibration_id": calibration_id,
             "probability_mode": probability_mode,
-            "calibration_type": calibration_type,
             "alpha_used": round(alpha, 4),
             "beta_used": round(beta, 4),
             "sigma_used": round(sigma_residual, 2),
             "beta_source": beta_source,
+            "sigma_source": sigma_source,
+            "calibration_computed_at": calibration_computed_at,
             "z": round(z, 4),
             # Probability and EV columns
             "p_cover": round(p_cover, 4),
