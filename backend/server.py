@@ -1562,6 +1562,9 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         "alpha": round(alpha_effective, 4),
         "beta": round(beta_effective, 4),
         "sigma_residual": round(sigma_residual, 2),
+        # Aliases for clarity
+        "alpha_effective": round(alpha_effective, 4),
+        "beta_effective": round(beta_effective, 4),
         # Raw regression values
         "alpha_reg": round(alpha_reg, 4),
         "beta_reg": round(beta_reg, 4),
@@ -1569,10 +1572,15 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         "alpha_prior": ALPHA_PRIOR,
         "beta_prior": BETA_PRIOR,
         # Shrinkage parameters
-        "k_shrinkage": K_SHRINKAGE,
-        "w_shrinkage": round(w, 4),
+        "k_used": K_SHRINKAGE,
+        "w_used": round(w, 4),
         "min_samples_full_trust": MIN_SAMPLES_FOR_FULL_TRUST,
-        "beta_clamped": n_with_spread < MIN_SAMPLES_FOR_FULL_TRUST,
+        "beta_clamped": beta_clamped,
+        "alpha_clamped": alpha_clamped,
+        "clamp_ranges": {
+            "beta": [BETA_CLAMP_MIN, BETA_CLAMP_MAX],
+            "alpha": [ALPHA_CLAMP_MIN, ALPHA_CLAMP_MAX]
+        },
         # Source info
         "beta_source": beta_source,
         "sigma_source": "historical_residuals",
@@ -1585,6 +1593,7 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         "model_version": model_doc.get('model_version'),
         "is_active": True,
         "is_locked": False,
+        "is_auditable": True,
         "model_residual_stats": {
             "mean": round(mean_residual_model, 2),
             "std": round(sigma_from_model, 2),
