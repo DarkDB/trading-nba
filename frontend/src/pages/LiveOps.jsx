@@ -150,24 +150,26 @@ export default function LiveOps() {
     }
   };
 
-  const getSignalBadge = (signal) => {
-    const classes = {
-      green: 'bg-green-500/10 text-green-500 border-green-500/30',
-      yellow: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/30',
-      red: 'bg-red-500/10 text-red-500 border-red-500/30'
+  // Get tier badge styling
+  const getTierBadge = (tier) => {
+    const styles = {
+      A: 'bg-green-500/20 text-green-400 border-green-500/50',
+      B: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50',
+      C: 'bg-zinc-500/20 text-zinc-400 border-zinc-500/50'
     };
-    return classes[signal] || classes.red;
+    return styles[tier] || styles.C;
   };
 
-  // Separate today and tomorrow picks
+  // Separate today and tomorrow picks from selected tier
   const now = new Date();
   const todayStr = now.toISOString().split('T')[0];
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-  const todayPicks = operativePicks.filter(p => p.commence_time?.startsWith(todayStr));
-  const tomorrowPicks = operativePicks.filter(p => p.commence_time?.startsWith(tomorrowStr));
+  const currentTierPicks = picksByTier[selectedTier] || [];
+  const todayPicks = currentTierPicks.filter(p => p.commence_time?.startsWith(todayStr));
+  const tomorrowPicks = currentTierPicks.filter(p => p.commence_time?.startsWith(tomorrowStr));
 
   if (loading) {
     return (
