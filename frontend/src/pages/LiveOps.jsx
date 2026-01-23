@@ -187,19 +187,22 @@ export default function LiveOps() {
           <h1 className="font-headings font-bold text-3xl tracking-tight text-white uppercase">
             Live Ops
           </h1>
-          <p className="text-zinc-400 mt-1">Operativa de apuestas en tiempo real</p>
+          <p className="text-zinc-400 mt-1">Paper Trading v3.0 - Máximo Volumen por Tiers</p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <Switch 
-              id="operative-mode" 
-              checked={operativeMode}
-              onCheckedChange={setOperativeMode}
-            />
-            <Label htmlFor="operative-mode" className="text-zinc-400 text-sm">
-              Modo Operativo
-            </Label>
-          </div>
+        <div className="flex items-center gap-2">
+          <Label className="text-zinc-400 text-sm mr-2">Tier:</Label>
+          {['A', 'B', 'C'].map(tier => (
+            <Button
+              key={tier}
+              variant={selectedTier === tier ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setSelectedTier(tier)}
+              className={selectedTier === tier ? getTierBadge(tier) : 'border-zinc-700'}
+            >
+              <Star className={`w-3 h-3 mr-1 ${tier === 'A' ? 'text-green-400' : tier === 'B' ? 'text-yellow-400' : 'text-zinc-400'}`} />
+              {tier} ({picksByTier[tier]?.length || 0})
+            </Button>
+          ))}
         </div>
       </div>
 
