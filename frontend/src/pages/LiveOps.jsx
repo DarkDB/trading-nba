@@ -64,9 +64,16 @@ export default function LiveOps() {
       // Also load active calibration
       await loadActiveCalibration();
       
+      // Load picks and organize by tier
       const picks = picksRes.data.picks || [];
       setAllPicks(picks);
-      setOperativePicks(picks.filter(p => !p.do_not_bet));
+      
+      // Organize by tier
+      const tierA = picks.filter(p => p.tier === 'A');
+      const tierB = picks.filter(p => p.tier === 'B');
+      const tierC = picks.filter(p => p.tier === 'C');
+      setPicksByTier({ A: tierA, B: tierB, C: tierC });
+      
       setModelInfo(modelRes.data.active_model);
     } catch (error) {
       console.error('Error loading data:', error);
