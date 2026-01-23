@@ -1529,9 +1529,16 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     beta_effective = w * beta_reg + (1 - w) * BETA_PRIOR
     alpha_effective = w * alpha_reg + (1 - w) * ALPHA_PRIOR
     
-    # Clamp beta_effective if sample size is below threshold
+    # Safety clamp if sample size is below threshold
+    beta_clamped = False
+    alpha_clamped = False
     if n_with_spread < MIN_SAMPLES_FOR_FULL_TRUST:
-        beta_effective = max(BETA_CLAMP_MIN, min(BETA_CLAMP_MAX, beta_effective))
+        if beta_effective < BETA_CLAMP_MIN or beta_effective > BETA_CLAMP_MAX:
+            beta_clamped = True
+            beta_effective = max(BETA_CLAMP_MIN, min(BETA_CLAMP_MAX, beta_effective))
+        if alpha_effective < ALPHA_CLAMP_MIN or alpha_effective > ALPHA_CLAMP_MAX:
+            alpha_clamped = True
+            alpha_effective = max(ALPHA_CLAMP_MIN, min(ALPHA_CLAMP_MAX, alpha_effective))
     
     # Use effective values for all downstream calculations
     beta = beta_effective
