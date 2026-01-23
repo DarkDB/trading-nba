@@ -2129,63 +2129,63 @@ async def generate_picks(
         
         picks.append(pick)
         
-        # Classify into tier lists
+        # Classify into tier lists (Paper Trading v3.0)
         if tier == "A":
             tier_a_picks.append(pick)
         elif tier == "B":
             tier_b_picks.append(pick)
         elif tier == "C":
             tier_c_picks.append(pick)
-        if not do_not_bet:
-            operative_picks.append(pick)
     
-    # Sort by EV (descending) instead of edge
-    if operative_mode:
-        operative_picks.sort(key=lambda p: p['ev'], reverse=True)
-        
-        # Apply max_picks_per_day limit (only if configured)
-        max_picks = OPERATIONAL_CONFIG['operative_thresholds']['max_picks_per_day']
-        if max_picks is not None and len(operative_picks) > max_picks:
-            operative_picks = operative_picks[:max_picks]
+    # Sort each tier by EV (descending)
+    tier_a_picks.sort(key=lambda p: p['ev'], reverse=True)
+    tier_b_picks.sort(key=lambda p: p['ev'], reverse=True)
+    tier_c_picks.sort(key=lambda p: abs(p['ev']))  # C closer to 0 EV first
     
     # Log stats
-    logger.info(f"Generated {len(picks)} picks. Operative: {len(operative_picks)}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
+    logger.info(f"Generated {len(picks)} picks. Tier A: {len(tier_a_picks)}, Tier B: {len(tier_b_picks)}, Tier C: {len(tier_c_picks)}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
     
-    if operative_mode:
-        return {
-            "picks": operative_picks,
-            "all_picks": picks,
-            "count": len(operative_picks),
-            "total_analyzed": len(picks),
-            "operative_mode": True,
-            "probability_mode": probability_mode,
-            "calibration": {
-                "calibration_id": calibration_id,
-                "alpha_used": alpha,
-                "beta_used": beta,
-                "sigma_used": sigma_residual,
-                "beta_source": beta_source,
-                "sigma_source": sigma_source,
-                "computed_at": calibration_computed_at
-            },
-            "filters_applied": OPERATIONAL_CONFIG['operative_thresholds']
-        }
-    else:
-        return {
-            "picks": picks,
-            "count": len(picks),
-            "operative_mode": False,
-            "probability_mode": probability_mode,
-            "calibration": {
-                "calibration_id": calibration_id,
-                "alpha_used": alpha,
-                "beta_used": beta,
-                "sigma_used": sigma_residual,
-                "beta_source": beta_source,
-                "sigma_source": sigma_source,
-                "computed_at": calibration_computed_at
-            }
-        }
+    # PAPER TRADING v3.0 Response - All picks with tier classification
+    return {
+        "status": "success",
+        "paper_trading_mode": True,
+        "calibration_id": calibration_id,
+        "probability_mode": probability_mode,
+        "calibration": {
+            "calibration_id": calibration_id,
+            "alpha_effective": alpha,
+            "beta_effective": beta,
+            "sigma_residual": sigma_residual,
+            "w_used": w_used,
+            "k_used": k_used,
+            "beta_reg": beta_reg,
+            "beta_prior": beta_prior,
+            "alpha_reg": alpha_reg,
+            "alpha_prior": alpha_prior,
+            "beta_source": beta_source,
+            "sigma_source": sigma_source,
+            "computed_at": calibration_computed_at
+        },
+        "tier_thresholds": {
+            "A": "EV >= 5%",
+            "B": "2% <= EV < 5%",
+            "C": "-1% <= EV <= +1%"
+        },
+        "summary": {
+            "total_analyzed": len(events),
+            "total_valid_picks": len(picks),
+            "tier_a_count": len(tier_a_picks),
+            "tier_b_count": len(tier_b_picks),
+            "tier_c_count": len(tier_c_picks)
+        },
+        "tiers": {
+            "A": tier_a_picks,
+            "B": tier_b_picks,
+            "C": tier_c_picks
+        },
+        "all_picks": picks,
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
 
 @api_router.get("/picks")
 async def get_picks(user=Depends(get_current_user)):
