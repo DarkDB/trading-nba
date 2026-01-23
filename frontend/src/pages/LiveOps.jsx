@@ -3,7 +3,6 @@ import { adminApi, userApi, statsApi } from '../lib/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
-import { Switch } from '../components/ui/switch';
 import { Label } from '../components/ui/label';
 import { toast } from 'sonner';
 import { 
@@ -21,19 +20,22 @@ import {
   BarChart3,
   AlertOctagon,
   Lock,
-  Unlock
+  Unlock,
+  Star,
+  Layers
 } from 'lucide-react';
 
 export default function LiveOps() {
-  const [operativePicks, setOperativePicks] = useState([]);
+  const [picksByTier, setPicksByTier] = useState({ A: [], B: [], C: [] });
   const [allPicks, setAllPicks] = useState([]);
+  const [picksSummary, setPicksSummary] = useState(null);
   const [modelInfo, setModelInfo] = useState(null);
   const [auditReport, setAuditReport] = useState(null);
   const [activeCalibration, setActiveCalibration] = useState(null);
   const [showAudit, setShowAudit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState({});
-  const [operativeMode, setOperativeMode] = useState(true);
+  const [selectedTier, setSelectedTier] = useState('A');
 
   useEffect(() => {
     loadData();
