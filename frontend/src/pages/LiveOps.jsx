@@ -782,7 +782,7 @@ export default function LiveOps() {
         <CardHeader>
           <CardTitle className="font-headings text-xl text-white flex items-center gap-2">
             <Target className="w-5 h-5 text-green-500" />
-            Today's Tier {selectedTier} Picks ({todayPicks.length})
+            Today&apos;s Tier {selectedTier} Picks ({todayPicks.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -805,7 +805,7 @@ export default function LiveOps() {
         <CardHeader>
           <CardTitle className="font-headings text-xl text-white flex items-center gap-2">
             <Calendar className="w-5 h-5 text-secondary" />
-            Tomorrow's Tier {selectedTier} Picks ({tomorrowPicks.length})
+            Tomorrow&apos;s Tier {selectedTier} Picks ({tomorrowPicks.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
