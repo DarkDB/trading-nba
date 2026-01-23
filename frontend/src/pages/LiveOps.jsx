@@ -286,58 +286,158 @@ export default function LiveOps() {
         </CardContent>
       </Card>
 
-      {/* Operative Filters Info + Sigma + Audit Button */}
+      {/* ACTIVE CALIBRATION BLOCK - Always visible */}
+      <Card className={`border-2 ${activeCalibration?.is_auditable ? 'bg-zinc-900/50 border-green-500/30' : 'bg-red-900/20 border-red-500/50'}`}>
+        <CardHeader className="py-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-2">
+              {activeCalibration?.is_auditable ? (
+                <CheckCircle className="w-4 h-4 text-green-400" />
+              ) : (
+                <AlertOctagon className="w-4 h-4 text-red-400" />
+              )}
+              Calibration (Active)
+            </CardTitle>
+            {activeCalibration?.is_locked ? (
+              <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/50">
+                <Lock className="w-3 h-3 mr-1" /> LOCKED
+              </Badge>
+            ) : activeCalibration?.is_auditable ? (
+              <Badge className="bg-green-500/20 text-green-400 border-green-500/50">
+                <Unlock className="w-3 h-3 mr-1" /> ACTIVE
+              </Badge>
+            ) : null}
+          </div>
+        </CardHeader>
+        <CardContent className="py-2">
+          {activeCalibration?.error ? (
+            <div className="p-3 bg-red-500/10 rounded border border-red-500/30">
+              <p className="text-red-400 font-bold text-sm">⚠️ CALIBRATION NOT AUDITABLE</p>
+              <p className="text-red-300 text-xs mt-1">{activeCalibration.message || activeCalibration.error}</p>
+            </div>
+          ) : activeCalibration?.is_auditable ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">calibration_id</span>
+                <span className="text-white font-mono">{activeCalibration.calibration_id}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">probability_mode</span>
+                <span className="text-green-400 font-bold">{activeCalibration.probability_mode}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">β (beta)</span>
+                <span className="text-blue-400 font-mono font-bold">{activeCalibration.beta?.toFixed(4)}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">α (alpha)</span>
+                <span className="text-blue-400 font-mono">{activeCalibration.alpha?.toFixed(4)}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">σ (sigma_residual)</span>
+                <span className="text-blue-400 font-mono font-bold">{activeCalibration.sigma_residual?.toFixed(2)}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">beta_source</span>
+                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.beta_source}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">sigma_source</span>
+                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.sigma_source}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">n_spread_samples</span>
+                <span className="text-white font-mono">{activeCalibration.n_spread_samples}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">n_residual_samples</span>
+                <span className="text-white font-mono">{activeCalibration.n_residual_samples}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">computed_at</span>
+                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.computed_at?.slice(0, 19)}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">data_cutoff</span>
+                <span className="text-zinc-300 font-mono">{activeCalibration.data_cutoff}</span>
+              </div>
+              <div className="bg-zinc-800/50 p-2 rounded">
+                <span className="text-zinc-500 block">model_version</span>
+                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.model_version}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3 bg-red-500/10 rounded border border-red-500/30">
+              <p className="text-red-400 font-bold text-sm">⚠️ CALIBRATION NOT AUDITABLE</p>
+              <p className="text-red-300 text-xs mt-1">Run POST /api/admin/model/calibrate-vs-market to create calibration</p>
+            </div>
+          )}
+          
+          {/* Action buttons */}
+          <div className="flex gap-2 mt-3">
+            <Button
+              onClick={async () => {
+                setSyncing(prev => ({ ...prev, sigma: true }));
+                try {
+                  const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/model/calibrate-vs-market`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
+                  });
+                  const data = await response.json();
+                  if (data.status === 'completed') {
+                    toast.success(`New calibration: ${data.calibration_id}`);
+                    await loadActiveCalibration();
+                    loadAuditReport();
+                  } else {
+                    toast.error(data.warning || data.error || 'Error en calibración');
+                  }
+                } catch (e) {
+                  toast.error('Error calibrating VS_MARKET');
+                } finally {
+                  setSyncing(prev => ({ ...prev, sigma: false }));
+                }
+              }}
+              disabled={syncing.sigma || activeCalibration?.is_locked}
+              variant="outline"
+              size="sm"
+              className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+            >
+              {syncing.sigma ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+              Recalibrate
+            </Button>
+            <Button
+              onClick={loadAuditReport}
+              disabled={syncing.audit}
+              variant="outline"
+              size="sm"
+              className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10"
+            >
+              {syncing.audit ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <BarChart3 className="w-4 h-4 mr-2" />}
+              Model Audit
+            </Button>
+            <Button
+              onClick={loadActiveCalibration}
+              variant="outline"
+              size="sm"
+              className="border-zinc-500/50 text-zinc-400 hover:bg-zinc-500/10"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Operative Filters Info */}
       {operativeMode && (
         <Card className="bg-zinc-900/50 border-border">
           <CardContent className="py-3">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div className="flex items-center gap-4 text-sm flex-wrap">
-                <span className="text-zinc-500">Filtros (VS_MARKET mode):</span>
-                <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">EV ≥ 2%</Badge>
-                <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
-                <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
-                <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/30">
-                  β={auditReport?.model_info?.calibration?.beta_used ?? '?'} | σ={auditReport?.model_info?.calibration?.sigma_used ?? '?'}
-                </Badge>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  onClick={async () => {
-                    setSyncing(prev => ({ ...prev, sigma: true }));
-                    try {
-                      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/model/calibrate-vs-market`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
-                      });
-                      const data = await response.json();
-                      if (data.status === 'completed') {
-                        toast.success(`VS_MARKET calibrado: β=${data.beta}, σ=${data.sigma_residual}`);
-                        loadAuditReport();
-                      } else {
-                        toast.error(data.warning || 'Error en calibración');
-                      }
-                    } catch (e) {
-                      toast.error('Error calibrating VS_MARKET');
-                    } finally {
-                      setSyncing(prev => ({ ...prev, sigma: false }));
-                    }
-                  }}
-                  disabled={syncing.sigma}
-                  variant="outline"
-                  size="sm"
-                  className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
-                >
-                  {syncing.sigma ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-                  Calibrate VS_MARKET
-                </Button>
-                <Button
-                  onClick={loadAuditReport}
-                  disabled={syncing.audit}
-                  variant="outline"
-                  size="sm"
-                  className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10"
-                >
-                  {syncing.audit ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <BarChart3 className="w-4 h-4 mr-2" />}
+            <div className="flex items-center gap-4 text-sm flex-wrap">
+              <span className="text-zinc-500">Filtros Operativos:</span>
+              <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">EV ≥ 2%</Badge>
+              <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
+              <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
+            </div>
                   Model Audit
                 </Button>
               </div>
