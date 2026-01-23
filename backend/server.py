@@ -1696,9 +1696,19 @@ async def get_current_calibration(user=Depends(get_current_user)):
     return {
         "calibration_id": calibration["calibration_id"],
         "probability_mode": calibration["probability_mode"],
+        # Effective values (used for all calculations)
         "alpha": calibration["alpha"],
         "beta": calibration["beta"],
         "sigma_residual": calibration["sigma_residual"],
+        # Shrinkage details
+        "beta_reg": calibration.get("beta_reg"),
+        "beta_prior": calibration.get("beta_prior"),
+        "alpha_reg": calibration.get("alpha_reg"),
+        "alpha_prior": calibration.get("alpha_prior"),
+        "k_shrinkage": calibration.get("k_shrinkage"),
+        "w_shrinkage": calibration.get("w_shrinkage"),
+        "beta_clamped": calibration.get("beta_clamped", False),
+        # Source info
         "beta_source": calibration.get("beta_source", "unknown"),
         "sigma_source": calibration.get("sigma_source", "unknown"),
         "n_spread_samples": calibration.get("n_spread_samples", 0),
