@@ -1835,24 +1835,29 @@ async def generate_picks(
     model_version = model_data['model_version']
     model_id = model_data['model_id']
     
-    # Get VS_MARKET calibration - REQUIRED, no fallback to legacy sigma
-    vs_market_doc = await db.model_calibration.find_one({"key": "vs_market"}, {"_id": 0})
+    # Get ACTIVE calibration from DB - REQUIRED, no fallback
+    calibration = await db.calibrations.find_one({"is_active": True}, {"_id": 0})
     
-    if not vs_market_doc:
+    if not calibration:
         raise HTTPException(
             status_code=400, 
-            detail="VS_MARKET calibration not found. Run POST /api/admin/model/calibrate-vs-market first."
+            detail="No active calibration found. Run POST /api/admin/model/calibrate-vs-market first."
         )
     
     # Extract calibration parameters - no defaults allowed
-    alpha = vs_market_doc.get('alpha')
-    beta = vs_market_doc.get('beta')
-    sigma_residual = vs_market_doc.get('sigma_residual')
+    calibration_id = calibration.get('calibration_id')
+    alpha = calibration.get('alpha')
+    beta = calibration.get('beta')
+    sigma_residual = calibration.get('sigma_residual')
+    beta_source = calibration.get('beta_source', 'unknown')
+    sigma_source = calibration.get('sigma_source', 'unknown')
+    calibration_computed_at = calibration.get('computed_at')
+    probability_mode = calibration.get('probability_mode', 'VS_MARKET')
     
-    if alpha is None or beta is None or sigma_residual is None:
+    if calibration_id is None or alpha is None or beta is None or sigma_residual is None:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid VS_MARKET calibration. Missing parameters: alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}"
+            detail=f"Invalid calibration. Missing: calibration_id={calibration_id}, alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}"
         )
     
     # Validate sigma_residual is not the forbidden 12.0 default
@@ -1861,10 +1866,6 @@ async def generate_picks(
             status_code=400,
             detail="sigma_residual=12.0 detected (legacy default). Re-run /api/admin/model/calibrate-vs-market."
         )
-    
-    calibration_type = "VS_MARKET"
-    probability_mode = "VS_MARKET"
-    beta_source = vs_market_doc.get('beta_source', 'unknown')
     
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(50)
     
