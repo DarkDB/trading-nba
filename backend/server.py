@@ -1916,11 +1916,16 @@ async def get_upcoming(user=Depends(get_current_user)):
     return {"events": result, "count": len(result)}
 
 @api_router.post("/picks/generate")
-async def generate_picks(
-    operative_mode: bool = Query(True, description="Apply operative filters"),
-    user=Depends(get_current_user)
-):
-    """Generate picks with VS_MARKET calibration - PAPER TRADING MODE with tiers"""
+async def generate_picks(user=Depends(get_current_user)):
+    """
+    Generate picks with VS_MARKET calibration - PAPER TRADING MODE v3.0
+    
+    Requirements:
+    - MUST have an active, auditable calibration (no fallbacks)
+    - All picks classified by tier (A, B, C) based on EV
+    - Full traceability: every pick contains calibration_id and all parameters
+    - No max_picks_per_day limit (max volume for paper trading)
+    """
     import numpy as np
     
     model_data = await get_active_model()
@@ -1939,7 +1944,15 @@ async def generate_picks(
     if not calibration:
         raise HTTPException(
             status_code=400, 
-            detail="No active calibration found. Run POST /api/admin/model/calibrate-vs-market first."
+            detail="NO_ACTIVE_CALIBRATION: Run POST /api/admin/model/calibrate-vs-market first."
+        )
+    
+    # PAPER TRADING v3.0: Require auditable calibration
+    is_auditable = calibration.get('is_auditable', False)
+    if not is_auditable:
+        raise HTTPException(
+            status_code=400,
+            detail="CALIBRATION_NOT_AUDITABLE: The active calibration is not marked as auditable. Re-run calibration."
         )
     
     # Extract ALL calibration parameters - no defaults allowed
@@ -1957,18 +1970,20 @@ async def generate_picks(
     beta_prior = calibration.get('beta_prior')
     alpha_reg = calibration.get('alpha_reg')
     alpha_prior = calibration.get('alpha_prior')
+    beta_effective = calibration.get('beta_effective', beta)
+    alpha_effective = calibration.get('alpha_effective', alpha)
     
     if calibration_id is None or alpha is None or beta is None or sigma_residual is None:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid calibration. Missing: calibration_id={calibration_id}, alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}"
+            detail=f"INVALID_CALIBRATION: Missing required fields - calibration_id={calibration_id}, alpha={alpha}, beta={beta}, sigma_residual={sigma_residual}"
         )
     
     # Validate sigma_residual is not the forbidden 12.0 default
     if sigma_residual == 12.0:
         raise HTTPException(
             status_code=400,
-            detail="sigma_residual=12.0 detected (legacy default). Re-run /api/admin/model/calibrate-vs-market."
+            detail="LEGACY_SIGMA_DETECTED: sigma_residual=12.0 is forbidden. Re-run /api/admin/model/calibrate-vs-market."
         )
     
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)  # Increased limit
