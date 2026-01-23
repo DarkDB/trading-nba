@@ -679,21 +679,23 @@ export default function LiveOps() {
         </Card>
       )}
 
-      {/* All Valid Picks - Main Section */}
-      <Card className="bg-card border-border border-primary/50">
+      {/* Picks by Selected Tier - Main Section */}
+      <Card className={`bg-card border-2 ${selectedTier === 'A' ? 'border-green-500/50' : selectedTier === 'B' ? 'border-yellow-500/50' : 'border-zinc-500/50'}`}>
         <CardHeader>
           <CardTitle className="font-headings text-xl text-white flex items-center gap-2">
-            <CheckCircle className="w-5 h-5 text-primary" />
-            All Valid Picks ({operativePicks.length})
+            <Star className={`w-5 h-5 ${selectedTier === 'A' ? 'text-green-500' : selectedTier === 'B' ? 'text-yellow-500' : 'text-zinc-500'}`} />
+            Tier {selectedTier} Picks ({currentTierPicks.length})
           </CardTitle>
           <CardDescription className="text-zinc-400">
-            Picks con EV ≥ 2% + HIGH confidence + Pinnacle. Ordenados por EV descendente.
+            {selectedTier === 'A' && 'Core picks: EV ≥ 5% - Highest expected value'}
+            {selectedTier === 'B' && 'Exploration picks: 2% ≤ EV < 5% - Moderate edge'}
+            {selectedTier === 'C' && 'Control picks: -1% ≤ EV ≤ +1% - Baseline/validation'}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {operativePicks.length === 0 ? (
+          {currentTierPicks.length === 0 ? (
             <div className="text-center py-8 text-zinc-500">
-              No hay picks válidos. Ejecuta Sync Upcoming → Sync Odds → Generate Picks
+              No hay picks en Tier {selectedTier}. Ejecuta Sync Upcoming → Sync Odds → Generate Picks
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -701,33 +703,36 @@ export default function LiveOps() {
                 <thead>
                   <tr className="border-b border-zinc-700">
                     <th className="text-left text-xs text-zinc-400 p-2 uppercase tracking-wider">Partido</th>
+                    <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Tier</th>
                     <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Apuesta</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Price</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Impl%</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">p_cover</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider font-bold text-green-400">EV%</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Pred</th>
-                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Thresh</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">σ</th>
+                    <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Calib ID</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {operativePicks.map((pick, idx) => {
-                    const spread = pick.open_spread || 0;
-                    const coverThreshold = pick.cover_threshold ?? -spread;
+                  {currentTierPicks.map((pick, idx) => {
                     const pCover = pick.p_cover ?? 0.5;
                     const impliedProb = pick.implied_prob ?? (1 / (pick.open_price || 1.91));
                     const ev = pick.ev ?? 0;
                     const sigmaUsed = pick.sigma_used ?? pick.sigma_residual ?? '?';
-                    const betaUsed = pick.beta_used ?? '?';
                     
                     return (
-                      <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/10' : ''}`}>
+                      <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/5' : ''}`}>
                         <td className="p-2">
                           <div className="flex flex-col">
                             <span className="text-white font-medium text-xs">{pick.home_team?.slice(0, 18)}</span>
                             <span className="text-zinc-500 text-xs">vs {pick.away_team?.slice(0, 18)}</span>
                           </div>
+                        </td>
+                        <td className="p-2 text-center">
+                          <Badge className={getTierBadge(pick.tier)}>
+                            {pick.tier}
+                          </Badge>
                         </td>
                         <td className="p-2 text-center">
                           <Badge className="bg-primary/20 text-primary border-primary/50 font-data font-bold text-xs px-2">
@@ -743,17 +748,17 @@ export default function LiveOps() {
                         <td className={`p-2 text-right font-data ${pCover > impliedProb ? 'text-green-400' : 'text-zinc-400'}`}>
                           {(pCover * 100).toFixed(1)}%
                         </td>
-                        <td className={`p-2 text-right font-data font-bold ${ev >= 0.05 ? 'text-green-400' : ev >= 0.02 ? 'text-yellow-400' : 'text-red-400'}`}>
+                        <td className={`p-2 text-right font-data font-bold ${ev >= 0.05 ? 'text-green-400' : ev >= 0.02 ? 'text-yellow-400' : 'text-zinc-400'}`}>
                           {ev >= 0 ? '+' : ''}{(ev * 100).toFixed(1)}%
                         </td>
                         <td className={`p-2 text-right font-data ${Math.abs(pick.pred_margin) > 15 ? 'text-red-400' : 'text-white'}`}>
                           {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(1)}
                         </td>
-                        <td className="p-2 text-right font-data text-zinc-500">
-                          {coverThreshold > 0 ? '+' : ''}{coverThreshold?.toFixed(1)}
-                        </td>
-                        <td className="p-2 text-right font-data text-blue-400" title={`β=${betaUsed}`}>
+                        <td className="p-2 text-right font-data text-blue-400" title={`β=${pick.beta_used}`}>
                           {typeof sigmaUsed === 'number' ? sigmaUsed.toFixed(1) : sigmaUsed}
+                        </td>
+                        <td className="p-2 text-center">
+                          <span className="font-mono text-[9px] text-zinc-500">{pick.calibration_id?.slice(-8)}</span>
                         </td>
                       </tr>
                     );
