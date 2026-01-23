@@ -438,10 +438,6 @@ export default function LiveOps() {
               <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
               <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
             </div>
-                  Model Audit
-                </Button>
-              </div>
-            </div>
           </CardContent>
         </Card>
       )}
