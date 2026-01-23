@@ -820,8 +820,10 @@ export default function LiveOps() {
   );
 }
 
-// Pick Card Component
-function PickCard({ pick, getSignalBadge }) {
+// Pick Card Component for Paper Trading v3.0
+function PickCard({ pick, getTierBadge }) {
+  const evPercent = (pick.ev ?? 0) * 100;
+  
   return (
     <div className="p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
       <div className="flex items-start justify-between mb-3">
@@ -840,8 +842,8 @@ function PickCard({ pick, getSignalBadge }) {
               <Clock className="w-4 h-4" />
               {pick.commence_time_local}
             </span>
-            <Badge className={`${getSignalBadge(pick.signal)} border`}>
-              {pick.signal?.toUpperCase()}
+            <Badge className={getTierBadge(pick.tier)}>
+              Tier {pick.tier}
             </Badge>
             <Badge variant="outline" className="text-xs">
               {pick.confidence?.toUpperCase()}
@@ -849,11 +851,11 @@ function PickCard({ pick, getSignalBadge }) {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-xs text-zinc-500 uppercase">Edge</p>
+          <p className="text-xs text-zinc-500 uppercase">EV</p>
           <p className={`font-data text-2xl font-bold ${
-            pick.edge_points > 0 ? 'text-green-500' : 'text-red-500'
+            evPercent >= 5 ? 'text-green-500' : evPercent >= 2 ? 'text-yellow-500' : 'text-zinc-400'
           }`}>
-            {pick.edge_points > 0 ? '+' : ''}{pick.edge_points?.toFixed(1)}
+            {evPercent >= 0 ? '+' : ''}{evPercent.toFixed(1)}%
           </p>
         </div>
       </div>
@@ -867,7 +869,7 @@ function PickCard({ pick, getSignalBadge }) {
       </div>
       
       {/* Details Grid */}
-      <div className="grid grid-cols-4 gap-4 mb-3">
+      <div className="grid grid-cols-5 gap-4 mb-3">
         <div>
           <p className="text-xs text-zinc-500">Pred. Margin</p>
           <p className="font-data text-white">{pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(2)}</p>
@@ -881,8 +883,32 @@ function PickCard({ pick, getSignalBadge }) {
           <p className="font-data text-blue-400">{pick.open_price?.toFixed(2)}</p>
         </div>
         <div>
+          <p className="text-xs text-zinc-500">p_cover</p>
+          <p className="font-data text-white">{(pick.p_cover * 100).toFixed(1)}%</p>
+        </div>
+        <div>
           <p className="text-xs text-zinc-500">Book</p>
-          <p className="font-data text-white">{pick.reference_bookmaker_used}</p>
+          <p className="font-data text-white">{pick.book}</p>
+        </div>
+      </div>
+      
+      {/* Calibration Audit Info */}
+      <div className="grid grid-cols-4 gap-3 mb-3 p-2 bg-zinc-800/50 rounded text-xs">
+        <div>
+          <span className="text-zinc-500">calibration_id:</span>
+          <span className="text-green-400 ml-1 font-mono text-[10px]">{pick.calibration_id?.slice(-12)}</span>
+        </div>
+        <div>
+          <span className="text-zinc-500">β:</span>
+          <span className="text-blue-400 ml-1 font-data">{pick.beta_used?.toFixed(4)}</span>
+        </div>
+        <div>
+          <span className="text-zinc-500">σ:</span>
+          <span className="text-blue-400 ml-1 font-data">{pick.sigma_used?.toFixed(2)}</span>
+        </div>
+        <div>
+          <span className="text-zinc-500">w:</span>
+          <span className="text-zinc-300 ml-1 font-data">{pick.w_used?.toFixed(4)}</span>
         </div>
       </div>
       
