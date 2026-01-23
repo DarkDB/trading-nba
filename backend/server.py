@@ -1502,6 +1502,38 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         sigma_residual = sigma_from_model
         beta_source = f"default_insufficient_spread_data (n={n_with_spread})"
     
+    # ============= BAYESIAN SHRINKAGE =============
+    # Apply shrinkage to regularize beta and alpha based on sample size
+    # This prevents overconfident estimates when n_spread_samples is small
+    
+    # Shrinkage parameters (configurable)
+    BETA_PRIOR = 0.35  # Conservative prior for beta
+    ALPHA_PRIOR = 0.0  # No systematic bias prior
+    K_SHRINKAGE = 150  # Shrinkage strength (higher = more shrinkage)
+    MIN_SAMPLES_FOR_FULL_TRUST = 200  # Below this, clamp beta_effective
+    BETA_CLAMP_MIN = 0.20
+    BETA_CLAMP_MAX = 0.70
+    
+    # Calculate shrinkage weight
+    # w = n / (n + k): when n is small, w is small, so we trust prior more
+    w = n_with_spread / (n_with_spread + K_SHRINKAGE)
+    
+    # Store raw regression values
+    beta_reg = beta
+    alpha_reg = alpha
+    
+    # Apply shrinkage: effective = w * regression + (1-w) * prior
+    beta_effective = w * beta_reg + (1 - w) * BETA_PRIOR
+    alpha_effective = w * alpha_reg + (1 - w) * ALPHA_PRIOR
+    
+    # Clamp beta_effective if sample size is below threshold
+    if n_with_spread < MIN_SAMPLES_FOR_FULL_TRUST:
+        beta_effective = max(BETA_CLAMP_MIN, min(BETA_CLAMP_MAX, beta_effective))
+    
+    # Use effective values for all downstream calculations
+    beta = beta_effective
+    alpha = alpha_effective
+    
     # Generate calibration_id
     calibration_id = f"calib_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     computed_at = datetime.now(timezone.utc).isoformat()
@@ -1516,9 +1548,22 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     calibration_doc = {
         "calibration_id": calibration_id,
         "probability_mode": "VS_MARKET",
-        "alpha": round(alpha, 4),
-        "beta": round(beta, 4),
+        # Effective values (used for calculations)
+        "alpha": round(alpha_effective, 4),
+        "beta": round(beta_effective, 4),
         "sigma_residual": round(sigma_residual, 2),
+        # Raw regression values
+        "alpha_reg": round(alpha_reg, 4),
+        "beta_reg": round(beta_reg, 4),
+        # Prior values
+        "alpha_prior": ALPHA_PRIOR,
+        "beta_prior": BETA_PRIOR,
+        # Shrinkage parameters
+        "k_shrinkage": K_SHRINKAGE,
+        "w_shrinkage": round(w, 4),
+        "min_samples_full_trust": MIN_SAMPLES_FOR_FULL_TRUST,
+        "beta_clamped": n_with_spread < MIN_SAMPLES_FOR_FULL_TRUST,
+        # Source info
         "beta_source": beta_source,
         "sigma_source": "historical_residuals",
         "n_spread_samples": n_with_spread,
@@ -1543,8 +1588,8 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
         {"key": "vs_market"},
         {"$set": {
             "calibration_id": calibration_id,
-            "alpha": round(alpha, 4),
-            "beta": round(beta, 4),
+            "alpha": round(alpha_effective, 4),
+            "beta": round(beta_effective, 4),
             "sigma_residual": round(sigma_residual, 2),
             "beta_source": beta_source,
             "computed_at": computed_at,
@@ -1555,26 +1600,44 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     
     # Generate flags
     flags = []
-    if beta < 0.1:
-        flags.append("WARNING_BETA_NEAR_ZERO (model provides weak signal)")
-    if beta > 0.8:
-        flags.append("WARNING_BETA_HIGH (possible overfit or data leak)")
-    if abs(alpha) > 3:
-        flags.append(f"WARNING_ALPHA_BIAS ({alpha:.2f})")
+    if beta_effective < 0.25:
+        flags.append(f"WARNING_BETA_EFFECTIVE_LOW ({beta_effective:.3f})")
+    if beta_effective > 0.65:
+        flags.append(f"WARNING_BETA_EFFECTIVE_HIGH ({beta_effective:.3f})")
+    if abs(alpha_effective) > 1.5:
+        flags.append(f"WARNING_ALPHA_EFFECTIVE_BIAS ({alpha_effective:.2f})")
     if sigma_residual < 10:
         flags.append("WARNING_SIGMA_RESIDUAL_LOW")
     if sigma_residual > 20:
         flags.append("WARNING_SIGMA_RESIDUAL_HIGH")
-    if "default" in beta_source:
-        flags.append(f"INFO_USING_DEFAULT_BETA ({beta_source})")
+    if n_with_spread < 50:
+        flags.append(f"INFO_LOW_SPREAD_SAMPLES (n={n_with_spread}, high shrinkage applied)")
+    if n_with_spread < MIN_SAMPLES_FOR_FULL_TRUST:
+        flags.append(f"INFO_BETA_CLAMPED_TO_[{BETA_CLAMP_MIN},{BETA_CLAMP_MAX}]")
     
     return {
         "status": "completed",
         "calibration_id": calibration_id,
         "probability_mode": "VS_MARKET",
-        "alpha": round(alpha, 4),
-        "beta": round(beta, 4),
+        # Effective values (what's actually used)
+        "alpha": round(alpha_effective, 4),
+        "beta": round(beta_effective, 4),
         "sigma_residual": round(sigma_residual, 2),
+        # Shrinkage details
+        "shrinkage": {
+            "beta_reg": round(beta_reg, 4),
+            "beta_prior": BETA_PRIOR,
+            "beta_effective": round(beta_effective, 4),
+            "alpha_reg": round(alpha_reg, 4),
+            "alpha_prior": ALPHA_PRIOR,
+            "alpha_effective": round(alpha_effective, 4),
+            "k_used": K_SHRINKAGE,
+            "w_used": round(w, 4),
+            "n_spread_samples": n_with_spread,
+            "min_samples_full_trust": MIN_SAMPLES_FOR_FULL_TRUST,
+            "beta_clamped": n_with_spread < MIN_SAMPLES_FOR_FULL_TRUST,
+            "interpretation": f"w={w:.2f} means {w*100:.0f}% regression, {(1-w)*100:.0f}% prior"
+        },
         "beta_source": beta_source,
         "sigma_source": "historical_residuals",
         "n_spread_samples": n_with_spread,
