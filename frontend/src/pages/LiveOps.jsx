@@ -316,48 +316,87 @@ export default function LiveOps() {
               <p className="text-red-300 text-xs mt-1">{activeCalibration.message || activeCalibration.error}</p>
             </div>
           ) : activeCalibration?.is_auditable ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">calibration_id</span>
-                <span className="text-white font-mono">{activeCalibration.calibration_id}</span>
+            <div className="space-y-3">
+              {/* Main calibration values */}
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
+                <div className="bg-zinc-800/50 p-2 rounded">
+                  <span className="text-zinc-500 block">calibration_id</span>
+                  <span className="text-green-400 font-mono text-[10px]">{activeCalibration.calibration_id}</span>
+                </div>
+                <div className="bg-zinc-800/50 p-2 rounded">
+                  <span className="text-zinc-500 block">probability_mode</span>
+                  <span className="text-green-400 font-bold">{activeCalibration.probability_mode}</span>
+                </div>
+                <div className="bg-green-900/30 p-2 rounded border border-green-500/30">
+                  <span className="text-zinc-500 block">β_effective</span>
+                  <span className="text-green-400 font-mono font-bold text-sm">{activeCalibration.beta?.toFixed(4)}</span>
+                </div>
+                <div className="bg-green-900/30 p-2 rounded border border-green-500/30">
+                  <span className="text-zinc-500 block">α_effective</span>
+                  <span className="text-green-400 font-mono font-bold text-sm">{activeCalibration.alpha?.toFixed(4)}</span>
+                </div>
+                <div className="bg-green-900/30 p-2 rounded border border-green-500/30">
+                  <span className="text-zinc-500 block">σ_residual</span>
+                  <span className="text-green-400 font-mono font-bold text-sm">{activeCalibration.sigma_residual?.toFixed(2)}</span>
+                </div>
+                <div className="bg-zinc-800/50 p-2 rounded">
+                  <span className="text-zinc-500 block">n_spread</span>
+                  <span className="text-white font-mono">{activeCalibration.n_spread_samples}</span>
+                </div>
               </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">probability_mode</span>
-                <span className="text-green-400 font-bold">{activeCalibration.probability_mode}</span>
+              
+              {/* Shrinkage details */}
+              <div className="p-2 bg-blue-900/20 rounded border border-blue-500/20">
+                <p className="text-blue-400 text-xs font-bold mb-2">Shrinkage Details</p>
+                <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-xs">
+                  <div>
+                    <span className="text-zinc-500 block">β_reg</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.beta_reg?.toFixed(4)}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">β_prior</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.beta_prior?.toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">α_reg</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.alpha_reg?.toFixed(4)}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">α_prior</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.alpha_prior?.toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">k</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.k_shrinkage}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">w</span>
+                    <span className="text-zinc-300 font-mono">{activeCalibration.w_shrinkage?.toFixed(4)}</span>
+                    {activeCalibration.beta_clamped && (
+                      <Badge className="ml-1 text-[8px] bg-yellow-500/20 text-yellow-400">CLAMPED</Badge>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">β (beta)</span>
-                <span className="text-blue-400 font-mono font-bold">{activeCalibration.beta?.toFixed(4)}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">α (alpha)</span>
-                <span className="text-blue-400 font-mono">{activeCalibration.alpha?.toFixed(4)}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">σ (sigma_residual)</span>
-                <span className="text-blue-400 font-mono font-bold">{activeCalibration.sigma_residual?.toFixed(2)}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">beta_source</span>
-                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.beta_source}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">sigma_source</span>
-                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.sigma_source}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">n_spread_samples</span>
-                <span className="text-white font-mono">{activeCalibration.n_spread_samples}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">n_residual_samples</span>
-                <span className="text-white font-mono">{activeCalibration.n_residual_samples}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">computed_at</span>
-                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.computed_at?.slice(0, 19)}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
+              
+              {/* Metadata */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-zinc-500">
+                <div>
+                  <span className="block">computed_at</span>
+                  <span className="text-zinc-400 font-mono text-[10px]">{activeCalibration.computed_at?.slice(0, 19)}</span>
+                </div>
+                <div>
+                  <span className="block">data_cutoff</span>
+                  <span className="text-zinc-400 font-mono">{activeCalibration.data_cutoff}</span>
+                </div>
+                <div>
+                  <span className="block">model_version</span>
+                  <span className="text-zinc-400 font-mono text-[10px]">{activeCalibration.model_version}</span>
+                </div>
+                <div>
+                  <span className="block">beta_source</span>
+                  <span className="text-zinc-400 font-mono text-[10px]">{activeCalibration.beta_source}</span>
+                </div>
                 <span className="text-zinc-500 block">data_cutoff</span>
                 <span className="text-zinc-300 font-mono">{activeCalibration.data_cutoff}</span>
               </div>
