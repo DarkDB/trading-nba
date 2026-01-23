@@ -1507,12 +1507,12 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     # This prevents overconfident estimates when n_spread_samples is small
     
     # Shrinkage parameters (configurable)
-    BETA_PRIOR = 0.30  # Conservative prior for beta (more shrinkage)
+    BETA_PRIOR = 0.25  # Very conservative prior for beta
     ALPHA_PRIOR = 0.0  # No systematic bias prior
     K_SHRINKAGE = 150  # Shrinkage strength (higher = more shrinkage)
     MIN_SAMPLES_FOR_FULL_TRUST = 200  # Below this, clamp beta_effective
     BETA_CLAMP_MIN = 0.20
-    BETA_CLAMP_MAX = 0.55  # Reduced max to be more conservative
+    BETA_CLAMP_MAX = 0.40  # Aggressive clamp for low-sample regime
     
     # Calculate shrinkage weight
     # w = n / (n + k): when n is small, w is small, so we trust prior more
