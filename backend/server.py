@@ -2100,12 +2100,20 @@ async def generate_picks(user=Depends(get_current_user)):
             "cover_threshold": round(cover_threshold, 2),
             "model_edge": round(model_edge, 2),
             "adjusted_edge": round(adjusted_edge, 2),
-            # VS_MARKET Calibration audit (REQUIRED for trazabilidad)
+            # VS_MARKET Calibration audit (REQUIRED for trazabilidad - Paper Trading v3.0)
             "calibration_id": calibration_id,
             "probability_mode": probability_mode,
+            # Effective values (what's actually used)
             "beta_used": round(beta, 4),
             "alpha_used": round(alpha, 4),
             "sigma_used": round(sigma_residual, 2),
+            # Shrinkage details for full audit
+            "beta_effective": round(beta_effective, 4) if beta_effective else round(beta, 4),
+            "alpha_effective": round(alpha_effective, 4) if alpha_effective else round(alpha, 4),
+            "beta_reg": round(beta_reg, 4) if beta_reg else None,
+            "beta_prior": beta_prior,
+            "alpha_reg": round(alpha_reg, 4) if alpha_reg else None,
+            "alpha_prior": alpha_prior,
             "w_used": round(w_used, 4) if w_used else None,
             "k_used": k_used,
             "beta_source": beta_source,
@@ -2116,7 +2124,7 @@ async def generate_picks(user=Depends(get_current_user)):
             "implied_prob": round(implied_prob, 4),
             "p_cover": round(p_cover, 4),
             "ev": round(ev, 4),
-            # Tier classification
+            # Tier classification (Paper Trading v3.0)
             "tier": tier,
             "signal_ev": signal_ev,
             "confidence": matchup_data['confidence'],
@@ -2126,7 +2134,7 @@ async def generate_picks(user=Depends(get_current_user)):
             "model_id": model_id,
             "model_version": model_version,
             "created_at": now_ts,
-            # Close line info (to be filled later)
+            # Close line info (to be filled later via snapshot)
             "close_spread": None,
             "close_price": None,
             "close_ts": None,
