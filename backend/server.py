@@ -1512,7 +1512,7 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     K_SHRINKAGE = 200  # Higher shrinkage strength for small samples
     MIN_SAMPLES_FOR_FULL_TRUST = 200  # Below this, clamp beta_effective
     BETA_CLAMP_MIN = 0.20
-    BETA_CLAMP_MAX = 0.32  # Very conservative clamp for low-sample regime
+    BETA_CLAMP_MAX = 0.28  # Extremely conservative clamp
     
     # Calculate shrinkage weight
     # w = n / (n + k): when n is small, w is small, so we trust prior more
