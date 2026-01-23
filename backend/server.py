@@ -2035,6 +2035,19 @@ async def generate_picks(
         # Adjusted edge after shrinkage
         adjusted_edge = beta * model_edge + alpha
         
+        # TIER CLASSIFICATION (Paper Trading)
+        # Tier A (Core): EV >= 5%
+        # Tier B (Exploration): 2% <= EV < 5%
+        # Tier C (Control): -1% <= EV <= +1%
+        if ev >= 0.05:
+            tier = "A"
+        elif ev >= 0.02:
+            tier = "B"
+        elif -0.01 <= ev <= 0.01:
+            tier = "C"
+        else:
+            tier = None  # Not in any tier
+        
         # Signal based on EV (new system)
         signal_ev = calculate_signal_ev(ev)
         signal_edge = calculate_signal(edge_points)  # Keep for backward compat
@@ -2050,21 +2063,6 @@ async def generate_picks(
             recommended_side, matchup_data['confidence'], model_version
         )
         
-        # Determine do_not_bet and reason (now based on EV)
-        do_not_bet = False
-        do_not_bet_reason = None
-        min_ev = OPERATIONAL_CONFIG['operative_thresholds']['min_ev']
-        
-        if not has_pinnacle:
-            do_not_bet = True
-            do_not_bet_reason = "NO_PINNACLE_LINE"
-        elif matchup_data['confidence'] != 'high':
-            do_not_bet = True
-            do_not_bet_reason = "LOW_CONFIDENCE"
-        elif ev < min_ev:
-            do_not_bet = True
-            do_not_bet_reason = f"EV_TOO_LOW ({ev:.1%} < {min_ev:.1%})"
-        
         now_ts = datetime.now(timezone.utc).isoformat()
         
         pick = {
@@ -2078,47 +2076,50 @@ async def generate_picks(
             "commence_time": event['commence_time'],
             "commence_time_local": format_local_time(event['commence_time']),
             "pred_margin": round(pred_margin, 2),
+            # Open line info
             "open_spread": market_spread,
             "open_price": round(open_price, 3),
             "open_ts": now_ts,
-            "market_spread_used": market_spread,
+            "book": ref_line['bookmaker_key'],
             # Audit columns
             "cover_threshold": round(cover_threshold, 2),
             "model_edge": round(model_edge, 2),
             "adjusted_edge": round(adjusted_edge, 2),
-            "betting_edge": round(edge_points, 2),
-            "edge_points": round(edge_points, 2),
             # VS_MARKET Calibration audit (REQUIRED for trazabilidad)
             "calibration_id": calibration_id,
             "probability_mode": probability_mode,
-            "alpha_used": round(alpha, 4),
             "beta_used": round(beta, 4),
+            "alpha_used": round(alpha, 4),
             "sigma_used": round(sigma_residual, 2),
+            "w_used": round(w_used, 4) if w_used else None,
+            "k_used": k_used,
             "beta_source": beta_source,
             "sigma_source": sigma_source,
             "calibration_computed_at": calibration_computed_at,
             "z": round(z, 4),
             # Probability and EV columns
-            "p_cover": round(p_cover, 4),
             "implied_prob": round(implied_prob, 4),
+            "p_cover": round(p_cover, 4),
             "ev": round(ev, 4),
-            "signal": signal_edge,  # Keep edge-based for backward compat
-            "signal_ev": signal_ev,  # New EV-based signal
+            # Tier classification
+            "tier": tier,
+            "signal_ev": signal_ev,
             "confidence": matchup_data['confidence'],
             "recommended_side": recommended_side,
             "recommended_bet_string": recommended_bet_string,
             "explanation": explanation,
-            "do_not_bet": do_not_bet,
-            "do_not_bet_reason": do_not_bet_reason,
             "model_id": model_id,
             "model_version": model_version,
-            "reference_bookmaker_used": ref_line['bookmaker_key'],
-            "features_used": {k: round(v, 4) for k, v in features.items()},
             "created_at": now_ts,
+            # Close line info (to be filled later)
             "close_spread": None,
             "close_price": None,
             "close_ts": None,
-            "clv_spread": None
+            "clv_spread": None,
+            # Result info (to be filled later)
+            "final_home_pts": None,
+            "final_away_pts": None,
+            "ats_result": None
         }
         
         await db.predictions.update_one(
@@ -2128,6 +2129,13 @@ async def generate_picks(
         
         picks.append(pick)
         
+        # Classify into tier lists
+        if tier == "A":
+            tier_a_picks.append(pick)
+        elif tier == "B":
+            tier_b_picks.append(pick)
+        elif tier == "C":
+            tier_c_picks.append(pick)
         if not do_not_bet:
             operative_picks.append(pick)
     
