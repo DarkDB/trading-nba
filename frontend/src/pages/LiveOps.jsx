@@ -472,19 +472,26 @@ export default function LiveOps() {
         </CardContent>
       </Card>
 
-      {/* Operative Filters Info */}
-      {operativeMode && (
-        <Card className="bg-zinc-900/50 border-border">
-          <CardContent className="py-3">
-            <div className="flex items-center gap-4 text-sm flex-wrap">
-              <span className="text-zinc-500">Filtros Operativos:</span>
-              <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">EV ≥ 2%</Badge>
-              <Badge variant="outline" className="text-xs">HIGH confidence</Badge>
-              <Badge variant="outline" className="text-xs">Pinnacle required</Badge>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Tier Thresholds Info */}
+      <Card className="bg-zinc-900/50 border-border">
+        <CardContent className="py-3">
+          <div className="flex items-center gap-4 text-sm flex-wrap">
+            <span className="text-zinc-500 flex items-center gap-1">
+              <Layers className="w-4 h-4" /> Tier Thresholds:
+            </span>
+            <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">
+              Tier A: EV ≥ 5%
+            </Badge>
+            <Badge variant="outline" className="text-xs bg-yellow-500/10 text-yellow-400 border-yellow-500/30">
+              Tier B: 2% ≤ EV &lt; 5%
+            </Badge>
+            <Badge variant="outline" className="text-xs bg-zinc-500/10 text-zinc-400 border-zinc-500/30">
+              Tier C: -1% ≤ EV ≤ +1%
+            </Badge>
+            <span className="text-zinc-600 text-xs ml-auto">HIGH confidence + Pinnacle required</span>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Model Audit Report */}
       {showAudit && auditReport && (
