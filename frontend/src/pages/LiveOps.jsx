@@ -397,12 +397,6 @@ export default function LiveOps() {
                   <span className="block">beta_source</span>
                   <span className="text-zinc-400 font-mono text-[10px]">{activeCalibration.beta_source}</span>
                 </div>
-                <span className="text-zinc-500 block">data_cutoff</span>
-                <span className="text-zinc-300 font-mono">{activeCalibration.data_cutoff}</span>
-              </div>
-              <div className="bg-zinc-800/50 p-2 rounded">
-                <span className="text-zinc-500 block">model_version</span>
-                <span className="text-zinc-300 font-mono text-[10px]">{activeCalibration.model_version}</span>
               </div>
             </div>
           ) : (
