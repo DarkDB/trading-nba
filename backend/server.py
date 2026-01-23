@@ -2412,11 +2412,13 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
         "model_version": model_doc.get('model_version'),
         "probability_mode": probability_mode,
         "calibration": {
-            "type": calibration_type,
+            "calibration_id": calibration_id,
             "alpha_used": round(alpha, 4),
             "beta_used": round(beta, 4),
             "sigma_used": round(sigma_residual, 2),
-            "beta_source": beta_source
+            "beta_source": beta_source,
+            "sigma_source": sigma_source,
+            "computed_at": calibration_computed_at
         },
         "intercept": round(float(model.intercept_), 4),
         "coefficients": {col: round(float(coef), 4) for col, coef in zip(feature_cols, model.coef_)},
@@ -2425,9 +2427,11 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     }
     
     return {
-        "report_type": "MODEL_SANITY_AUDIT_V3_VS_MARKET",
+        "report_type": "MODEL_SANITY_AUDIT_V4",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "calibration_id": calibration_id,
         "probability_mode": probability_mode,
+        "is_auditable": True,
         "model_info": model_info,
         "statistics": stats,
         "acceptance_criteria": {
