@@ -816,64 +816,6 @@ export default function LiveOps() {
         </CardContent>
       </Card>
 
-      {/* All Analyzed Picks (if not in operative mode) */}
-      {!operativeMode && allPicks.length > 0 && (
-        <Card className="bg-card border-border">
-          <CardHeader>
-            <CardTitle className="font-headings text-xl text-white">
-              All Analyzed Picks ({allPicks.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-zinc-800">
-                    <th className="text-left text-xs text-zinc-500 p-2">Partido</th>
-                    <th className="text-left text-xs text-zinc-500 p-2">Hora</th>
-                    <th className="text-right text-xs text-zinc-500 p-2">Pred</th>
-                    <th className="text-right text-xs text-zinc-500 p-2">Spread</th>
-                    <th className="text-right text-xs text-zinc-500 p-2">Edge</th>
-                    <th className="text-center text-xs text-zinc-500 p-2">Signal</th>
-                    <th className="text-center text-xs text-zinc-500 p-2">Bet?</th>
-                    <th className="text-left text-xs text-zinc-500 p-2">Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {allPicks.map((pick) => (
-                    <tr key={pick.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
-                      <td className="p-2">
-                        <span className="text-white text-sm">{pick.home_abbr || pick.home_team?.slice(0,3)}</span>
-                        <span className="text-zinc-500 mx-1">vs</span>
-                        <span className="text-zinc-300 text-sm">{pick.away_abbr || pick.away_team?.slice(0,3)}</span>
-                      </td>
-                      <td className="p-2 text-sm text-zinc-400">{pick.commence_time_local}</td>
-                      <td className="p-2 text-right font-data text-white">{pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(1)}</td>
-                      <td className="p-2 text-right font-data text-blue-400">{pick.open_spread > 0 ? '+' : ''}{pick.open_spread?.toFixed(1)}</td>
-                      <td className="p-2 text-right font-data font-bold" style={{color: pick.signal === 'green' ? '#22c55e' : pick.signal === 'yellow' ? '#eab308' : '#ef4444'}}>
-                        {pick.edge_points > 0 ? '+' : ''}{pick.edge_points?.toFixed(1)}
-                      </td>
-                      <td className="p-2 text-center">
-                        <Badge className={`${getSignalBadge(pick.signal)} border text-xs`}>
-                          {pick.signal?.toUpperCase()}
-                        </Badge>
-                      </td>
-                      <td className="p-2 text-center">
-                        {pick.do_not_bet ? (
-                          <XCircle className="w-4 h-4 text-red-500 mx-auto" />
-                        ) : (
-                          <CheckCircle className="w-4 h-4 text-green-500 mx-auto" />
-                        )}
-                      </td>
-                      <td className="p-2 text-xs text-zinc-500">{pick.do_not_bet_reason || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }
