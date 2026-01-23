@@ -2316,12 +2316,14 @@ async def get_model_sanity_report(n: int = 200, user=Depends(get_current_user)):
     # Calculate comprehensive statistics
     stats = {
         "n_samples": n_samples,
+        "calibration_id": calibration_id,
         "probability_mode": probability_mode,
-        "calibration_type": calibration_type,
         "alpha_used": round(alpha, 4),
         "beta_used": round(beta, 4),
         "sigma_used": round(sigma_residual, 2),
         "beta_source": beta_source,
+        "sigma_source": sigma_source,
+        "calibration_computed_at": calibration_computed_at,
         "pred_margin": {
             "mean": round(np.mean(pred_margins), 2),
             "std": round(np.std(pred_margins), 2),
