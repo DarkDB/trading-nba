@@ -1920,7 +1920,7 @@ async def generate_picks(
     operative_mode: bool = Query(True, description="Apply operative filters"),
     user=Depends(get_current_user)
 ):
-    """Generate picks with VS_MARKET calibration for probability and EV calculations"""
+    """Generate picks with VS_MARKET calibration - PAPER TRADING MODE with tiers"""
     import numpy as np
     
     model_data = await get_active_model()
@@ -1942,7 +1942,7 @@ async def generate_picks(
             detail="No active calibration found. Run POST /api/admin/model/calibrate-vs-market first."
         )
     
-    # Extract calibration parameters - no defaults allowed
+    # Extract ALL calibration parameters - no defaults allowed
     calibration_id = calibration.get('calibration_id')
     alpha = calibration.get('alpha')
     beta = calibration.get('beta')
@@ -1951,6 +1951,12 @@ async def generate_picks(
     sigma_source = calibration.get('sigma_source', 'unknown')
     calibration_computed_at = calibration.get('computed_at')
     probability_mode = calibration.get('probability_mode', 'VS_MARKET')
+    w_used = calibration.get('w_used') or calibration.get('w_shrinkage')
+    k_used = calibration.get('k_used') or calibration.get('k_shrinkage')
+    beta_reg = calibration.get('beta_reg')
+    beta_prior = calibration.get('beta_prior')
+    alpha_reg = calibration.get('alpha_reg')
+    alpha_prior = calibration.get('alpha_prior')
     
     if calibration_id is None or alpha is None or beta is None or sigma_residual is None:
         raise HTTPException(
@@ -1965,25 +1971,31 @@ async def generate_picks(
             detail="sigma_residual=12.0 detected (legacy default). Re-run /api/admin/model/calibrate-vs-market."
         )
     
-    events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(50)
+    events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)  # Increased limit
     
     picks = []
-    operative_picks = []
+    tier_a_picks = []  # EV >= 5%
+    tier_b_picks = []  # 2% <= EV < 5%
+    tier_c_picks = []  # -1% <= EV <= 1% (control)
     
     for event in events:
         lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
         
-        # Check Pinnacle availability
+        # PAPER TRADING: Require Pinnacle
         ref_line = select_reference_line(lines, require_pinnacle=True)
         has_pinnacle = ref_line is not None
         
         if not has_pinnacle:
-            ref_line = select_reference_line(lines, require_pinnacle=False)
-        
-        if not ref_line:
-            continue
+            continue  # Skip non-Pinnacle for paper trading
         
         matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
+        if not matchup_data:
+            continue
+            
+        # PAPER TRADING: Require HIGH confidence
+        if matchup_data['confidence'] != 'high':
+            continue
+            
         features = matchup_data['features']
         home_abbr, away_abbr = matchup_data['home_abbr'], matchup_data['away_abbr']
         
