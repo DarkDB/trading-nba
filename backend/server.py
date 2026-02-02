@@ -1787,6 +1787,339 @@ async def get_calibration(user=Depends(get_current_user)):
             "defaults": OPERATIONAL_CONFIG["calibration"]
         }
 
+# ============= PIPELINE DEBUG ENDPOINT =============
+
+@api_router.get("/admin/debug/pipeline-status")
+async def debug_pipeline_status(user=Depends(get_current_user)):
+    """
+    Comprehensive pipeline diagnostic endpoint.
+    Returns detailed telemetry for debugging pick generation issues.
+    """
+    import numpy as np
+    from datetime import timedelta
+    
+    now = datetime.now(timezone.utc)
+    result = {
+        "timestamp": now.isoformat(),
+        "sections": {}
+    }
+    
+    # ============= A) UPCOMING EVENTS =============
+    upcoming_section = {}
+    
+    # Total events
+    upcoming_total = await db.upcoming_events.count_documents({})
+    upcoming_pending = await db.upcoming_events.count_documents({"status": "pending"})
+    
+    # Future events (commence_time > now)
+    upcoming_future = await db.upcoming_events.count_documents({
+        "commence_time": {"$gt": now.isoformat()}
+    })
+    
+    # Sample events
+    upcoming_sample = await db.upcoming_events.find(
+        {"status": "pending"},
+        {"_id": 0, "event_id": 1, "home_team": 1, "away_team": 1, "commence_time": 1, "status": 1}
+    ).sort("commence_time", 1).limit(5).to_list(5)
+    
+    # Add local time to samples
+    for e in upcoming_sample:
+        e['game_time_utc'] = e.get('commence_time')
+        e['game_time_local'] = format_local_time(e.get('commence_time')) if e.get('commence_time') else None
+        e['is_future'] = e.get('commence_time', '') > now.isoformat() if e.get('commence_time') else False
+    
+    upcoming_section = {
+        "upcoming_events_total": upcoming_total,
+        "upcoming_events_pending": upcoming_pending,
+        "upcoming_events_future": upcoming_future,
+        "upcoming_events_sample": upcoming_sample
+    }
+    result["sections"]["A_upcoming"] = upcoming_section
+    
+    # ============= B) ODDS =============
+    odds_section = {}
+    
+    # Total odds in last 48h
+    cutoff_48h = (now - timedelta(hours=48)).isoformat()
+    odds_total = await db.market_lines.count_documents({})
+    odds_recent = await db.market_lines.count_documents({"updated_at": {"$gte": cutoff_48h}})
+    
+    # Pinnacle odds
+    odds_pinnacle = await db.market_lines.count_documents({"bookmaker_key": "pinnacle"})
+    odds_pinnacle_recent = await db.market_lines.count_documents({
+        "bookmaker_key": "pinnacle",
+        "updated_at": {"$gte": cutoff_48h}
+    })
+    
+    # Match odds to events
+    all_event_ids = [e['event_id'] async for e in db.upcoming_events.find({"status": "pending"}, {"event_id": 1})]
+    odds_matched = await db.market_lines.count_documents({"event_id": {"$in": all_event_ids}})
+    odds_pinnacle_matched = await db.market_lines.count_documents({
+        "event_id": {"$in": all_event_ids},
+        "bookmaker_key": "pinnacle"
+    })
+    
+    # Sample unmatched odds
+    unmatched_sample = await db.market_lines.find(
+        {"event_id": {"$nin": all_event_ids}},
+        {"_id": 0, "bookmaker_key": 1, "home_team": 1, "away_team": 1, "spread_point_home": 1, "price_home_decimal": 1, "event_id": 1}
+    ).limit(5).to_list(5)
+    
+    odds_section = {
+        "odds_rows_total": odds_total,
+        "odds_rows_recent_48h": odds_recent,
+        "odds_rows_pinnacle_total": odds_pinnacle,
+        "odds_rows_pinnacle_recent": odds_pinnacle_recent,
+        "odds_rows_matched_to_events": odds_matched,
+        "odds_rows_pinnacle_matched": odds_pinnacle_matched,
+        "odds_rows_unmatched_sample": unmatched_sample
+    }
+    result["sections"]["B_odds"] = odds_section
+    
+    # ============= C) FEATURES =============
+    features_section = {}
+    
+    events_with_features = 0
+    events_missing_features = []
+    
+    # Check a sample of pending events for feature availability
+    sample_events = await db.upcoming_events.find(
+        {"status": "pending"},
+        {"_id": 0}
+    ).sort("commence_time", 1).limit(20).to_list(20)
+    
+    for event in sample_events:
+        try:
+            matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
+            if matchup_data and matchup_data.get('features'):
+                events_with_features += 1
+            else:
+                events_missing_features.append({
+                    "event_id": event['event_id'],
+                    "home_team": event['home_team'],
+                    "away_team": event['away_team'],
+                    "reason": "MATCHUP_DATA_NULL"
+                })
+        except Exception as e:
+            events_missing_features.append({
+                "event_id": event['event_id'],
+                "home_team": event['home_team'],
+                "away_team": event['away_team'],
+                "reason": f"FEATURE_ERROR: {str(e)[:50]}"
+            })
+    
+    features_section = {
+        "events_checked": len(sample_events),
+        "events_with_features": events_with_features,
+        "events_missing_features_count": len(events_missing_features),
+        "events_missing_features_sample": events_missing_features[:5]
+    }
+    result["sections"]["C_features"] = features_section
+    
+    # ============= D) CALIBRATION =============
+    calibration_section = {}
+    
+    calibration = await db.calibrations.find_one({"is_active": True}, {"_id": 0})
+    model_data = await get_active_model()
+    
+    calibration_section = {
+        "calibration_exists": calibration is not None,
+        "calibration_id": calibration.get("calibration_id") if calibration else None,
+        "calibration_is_auditable": calibration.get("is_auditable") if calibration else None,
+        "beta_effective": calibration.get("beta") if calibration else None,
+        "alpha_effective": calibration.get("alpha") if calibration else None,
+        "sigma_residual": calibration.get("sigma_residual") if calibration else None,
+        "model_exists": model_data is not None,
+        "model_version": model_data.get("model_version") if model_data else None,
+        "calibration_model_version": calibration.get("model_version") if calibration else None,
+        "model_version_match": (
+            model_data.get("model_version") == calibration.get("model_version")
+            if model_data and calibration else False
+        )
+    }
+    result["sections"]["D_calibration"] = calibration_section
+    
+    # ============= E) CANDIDATES (Pre-filter simulation) =============
+    candidates_section = {}
+    discard_reasons = {}
+    discard_samples = []
+    candidates_pre_filter = []
+    
+    def add_discard(reason, event_id=None, details=None):
+        discard_reasons[reason] = discard_reasons.get(reason, 0) + 1
+        if len(discard_samples) < 10 and event_id:
+            discard_samples.append({"event_id": event_id, "reason": reason, "details": details})
+    
+    # Get pending events
+    events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)
+    
+    if not events:
+        add_discard("NO_UPCOMING_EVENTS")
+    
+    if not calibration:
+        add_discard("CALIBRATION_MISSING_OR_INACTIVE")
+    
+    if not model_data:
+        add_discard("MODEL_NOT_AVAILABLE")
+    
+    # Process events if we have prerequisites
+    if events and calibration and model_data:
+        model = model_data['model']
+        scaler = model_data['scaler']
+        feature_cols = model_data['features']
+        
+        alpha = calibration.get('alpha')
+        beta = calibration.get('beta')
+        sigma_residual = calibration.get('sigma_residual')
+        
+        if alpha is None or beta is None or sigma_residual is None:
+            add_discard("SIGMA_OR_BETA_NULL", details=f"alpha={alpha}, beta={beta}, sigma={sigma_residual}")
+        
+        for event in events:
+            event_id = event['event_id']
+            
+            # Check odds
+            lines = await db.market_lines.find({"event_id": event_id}, {"_id": 0}).to_list(20)
+            if not lines:
+                add_discard("ODDS_NOT_FOUND_FOR_EVENT", event_id, f"home={event['home_team']}")
+                continue
+            
+            ref_line = select_reference_line(lines, require_pinnacle=True)
+            if not ref_line:
+                add_discard("BOOK_NOT_PINNACLE", event_id, f"books={[l.get('bookmaker_key') for l in lines]}")
+                continue
+            
+            # Check spread/price
+            spread = ref_line.get('spread_point_home')
+            price_home = ref_line.get('price_home_decimal')
+            price_away = ref_line.get('price_away_decimal')
+            
+            if spread is None or (price_home is None and price_away is None):
+                add_discard("MISSING_SPREAD_OR_PRICE", event_id, f"spread={spread}, prices={price_home}/{price_away}")
+                continue
+            
+            # Check features
+            try:
+                matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
+            except Exception as e:
+                add_discard("FEATURES_MISSING", event_id, str(e)[:50])
+                continue
+            
+            if not matchup_data:
+                add_discard("FEATURES_MISSING", event_id, "matchup_data is None")
+                continue
+            
+            # Check team mapping
+            if not matchup_data.get('home_abbr') or not matchup_data.get('away_abbr'):
+                add_discard("TEAM_MAPPING_MISMATCH", event_id, f"home={event['home_team']}, away={event['away_team']}")
+                continue
+            
+            # Calculate prediction
+            features = matchup_data['features']
+            X = np.array([[features.get(col, 0) for col in feature_cols]])
+            X_scaled = scaler.transform(X)
+            pred_margin = float(model.predict(X_scaled)[0])
+            
+            market_spread = spread
+            cover_threshold = -market_spread
+            model_edge = pred_margin - cover_threshold
+            
+            home_covers = pred_margin > cover_threshold
+            if home_covers:
+                open_price = price_home or 1.91
+            else:
+                open_price = price_away or 1.91
+            
+            # Calculate p_cover and EV
+            try:
+                recommended_side = "HOME" if home_covers else "AWAY"
+                p_cover, z = calculate_p_cover_vs_market(model_edge, alpha, beta, sigma_residual, recommended_side)
+                ev = calculate_ev(p_cover, open_price)
+                
+                if np.isnan(ev) or np.isinf(ev):
+                    add_discard("EV_NAN_OR_INF", event_id, f"p_cover={p_cover}, price={open_price}, ev={ev}")
+                    continue
+                    
+            except Exception as e:
+                add_discard("EV_NAN_OR_INF", event_id, str(e)[:50])
+                continue
+            
+            confidence = matchup_data.get('confidence', 'low')
+            
+            # This is a valid candidate (pre-filter)
+            candidate = {
+                "event_id": event_id,
+                "home_team": event['home_team'],
+                "away_team": event['away_team'],
+                "pred_margin": round(pred_margin, 2),
+                "market_spread": market_spread,
+                "price": round(open_price, 3),
+                "p_cover": round(p_cover, 4),
+                "ev": round(ev, 4),
+                "ev_pct": f"{ev*100:.1f}%",
+                "confidence": confidence,
+                "book": ref_line.get('bookmaker_key')
+            }
+            candidates_pre_filter.append(candidate)
+            
+            # Now apply filters and track discards
+            if confidence != 'high':
+                add_discard("CONFIDENCE_NOT_HIGH", event_id, f"confidence={confidence}")
+            
+            if ev < -0.01:
+                add_discard("EV_BELOW_THRESHOLD", event_id, f"ev={ev:.4f} < -0.01")
+    
+    # Calculate post-filter counts
+    candidates_after_confidence = [c for c in candidates_pre_filter if c['confidence'] == 'high']
+    candidates_after_ev = [c for c in candidates_after_confidence if c['ev'] >= -0.01]
+    
+    tier_a = [c for c in candidates_after_confidence if c['ev'] >= 0.05]
+    tier_b = [c for c in candidates_after_confidence if 0.02 <= c['ev'] < 0.05]
+    tier_c = [c for c in candidates_after_confidence if -0.01 <= c['ev'] <= 0.01]
+    
+    candidates_section = {
+        "candidates_pre_filter_total": len(candidates_pre_filter),
+        "candidates_pre_filter_sample": candidates_pre_filter[:5],
+        "candidates_after_confidence": len(candidates_after_confidence),
+        "candidates_after_ev_threshold": len(candidates_after_ev),
+        "tier_a_total": len(tier_a),
+        "tier_b_total": len(tier_b),
+        "tier_c_total": len(tier_c),
+        "tier_a_sample": tier_a[:3],
+        "tier_b_sample": tier_b[:3],
+        "tier_c_sample": tier_c[:3]
+    }
+    result["sections"]["E_candidates"] = candidates_section
+    
+    # ============= F) DISCARD REASONS =============
+    result["discard_reasons"] = discard_reasons
+    result["discard_samples"] = discard_samples
+    
+    # ============= G) DIAGNOSIS =============
+    diagnosis = []
+    
+    if upcoming_future == 0:
+        diagnosis.append("CRITICAL: No future events found. Run POST /api/admin/sync-upcoming")
+    
+    if odds_pinnacle_matched == 0:
+        diagnosis.append("CRITICAL: No Pinnacle odds matched to events. Run POST /api/admin/sync-odds?book=pinnacle")
+    
+    if not calibration:
+        diagnosis.append("CRITICAL: No active calibration. Run POST /api/admin/model/calibrate-vs-market")
+    
+    if candidates_pre_filter and len(candidates_after_confidence) == 0:
+        diagnosis.append("WARNING: All candidates filtered by CONFIDENCE_NOT_HIGH")
+    
+    if len(candidates_after_confidence) > 0 and len(tier_a) + len(tier_b) + len(tier_c) == 0:
+        diagnosis.append("WARNING: Candidates exist but none meet tier thresholds")
+    
+    if not diagnosis:
+        diagnosis.append("OK: Pipeline appears healthy")
+    
+    result["diagnosis"] = diagnosis
+    
+    return result
+
 # ============= DEBUG ENDPOINT =============
 
 @api_router.get("/admin/debug/predict", response_model=DebugPrediction)
