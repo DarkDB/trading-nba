@@ -967,6 +967,22 @@ async def train_model(user=Depends(get_current_user)):
 
 @api_router.post("/admin/sync-upcoming", response_model=SyncStatus)
 async def sync_upcoming(days: int = 2, user=Depends(get_current_user)):
+    """Sync upcoming NBA events from The Odds API. Also cleans up past events."""
+    
+    # CLEANUP: Remove past events before syncing
+    now = datetime.now(timezone.utc)
+    now_str = now.isoformat()
+    cleanup_result = await db.upcoming_events.delete_many({
+        "commence_time": {"$lt": now_str}
+    })
+    cleaned_count = cleanup_result.deleted_count
+    
+    # Also clean orphaned odds
+    remaining_event_ids = [e['event_id'] async for e in db.upcoming_events.find({}, {"event_id": 1})]
+    if remaining_event_ids:
+        await db.market_lines.delete_many({"event_id": {"$nin": remaining_event_ids}})
+    
+    # Fetch and sync new events
     events = await fetch_upcoming_events(days)
     for event in events:
         event_doc = {
@@ -978,7 +994,12 @@ async def sync_upcoming(days: int = 2, user=Depends(get_current_user)):
             "status": "pending", "updated_at": datetime.now(timezone.utc).isoformat()
         }
         await db.upcoming_events.update_one({"event_id": event['id']}, {"$set": event_doc}, upsert=True)
-    return SyncStatus(status="completed", message=f"Synced {len(events)} events", details={"count": len(events)})
+    
+    return SyncStatus(
+        status="completed", 
+        message=f"Synced {len(events)} events (cleaned {cleaned_count} past)", 
+        details={"count": len(events), "cleaned": cleaned_count}
+    )
 
 @api_router.post("/admin/sync-odds", response_model=SyncStatus)
 async def sync_odds(days: int = 2, user=Depends(get_current_user)):
