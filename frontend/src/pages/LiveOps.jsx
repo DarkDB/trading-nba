@@ -826,24 +826,21 @@ export default function LiveOps() {
                     <th className="text-left text-xs text-zinc-400 p-2 uppercase tracking-wider">Partido</th>
                     <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Tier</th>
                     <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Apuesta</th>
+                    <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Fav?</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Price</th>
-                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Impl%</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">p_cover</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider font-bold text-green-400">EV%</th>
                     <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">Pred</th>
-                    <th className="text-right text-xs text-zinc-400 p-2 uppercase tracking-wider">σ</th>
-                    <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Calib ID</th>
+                    <th className="text-center text-xs text-zinc-400 p-2 uppercase tracking-wider">Result</th>
                   </tr>
                 </thead>
                 <tbody>
                   {currentTierPicks.map((pick, idx) => {
                     const pCover = pick.p_cover ?? 0.5;
-                    const impliedProb = pick.implied_prob ?? (1 / (pick.open_price || 1.91));
                     const ev = pick.ev ?? 0;
-                    const sigmaUsed = pick.sigma_used ?? pick.sigma_residual ?? '?';
                     
                     return (
-                      <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${idx === 0 ? 'bg-green-500/5' : ''}`}>
+                      <tr key={pick.id} className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${pick.result === 'WIN' ? 'bg-green-500/5' : pick.result === 'LOSS' ? 'bg-red-500/5' : ''}`}>
                         <td className="p-2">
                           <div className="flex flex-col">
                             <span className="text-white font-medium text-xs">{pick.home_team?.slice(0, 18)}</span>
@@ -860,24 +857,39 @@ export default function LiveOps() {
                             {pick.recommended_bet_string}
                           </Badge>
                         </td>
+                        <td className="p-2 text-center">
+                          {pick.is_favorite_pick ? (
+                            <Badge className="bg-orange-500/20 text-orange-400 text-[10px]">FAV</Badge>
+                          ) : (
+                            <Badge className="bg-blue-500/20 text-blue-400 text-[10px]">DOG</Badge>
+                          )}
+                        </td>
                         <td className="p-2 text-right font-data text-white">
                           {pick.open_price?.toFixed(2)}
                         </td>
-                        <td className="p-2 text-right font-data text-zinc-400">
-                          {(impliedProb * 100).toFixed(1)}%
-                        </td>
-                        <td className={`p-2 text-right font-data ${pCover > impliedProb ? 'text-green-400' : 'text-zinc-400'}`}>
+                        <td className={`p-2 text-right font-data ${pCover > 0.52 ? 'text-green-400' : 'text-zinc-400'}`}>
                           {(pCover * 100).toFixed(1)}%
                         </td>
                         <td className={`p-2 text-right font-data font-bold ${ev >= 0.05 ? 'text-green-400' : ev >= 0.02 ? 'text-yellow-400' : 'text-zinc-400'}`}>
                           {ev >= 0 ? '+' : ''}{(ev * 100).toFixed(1)}%
                         </td>
-                        <td className={`p-2 text-right font-data ${Math.abs(pick.pred_margin) > 15 ? 'text-red-400' : 'text-white'}`}>
+                        <td className={`p-2 text-right font-data ${Math.abs(pick.pred_margin) > 12 ? 'text-orange-400' : 'text-white'}`}>
                           {pick.pred_margin > 0 ? '+' : ''}{pick.pred_margin?.toFixed(1)}
                         </td>
-                        <td className="p-2 text-right font-data text-blue-400" title={`β=${pick.beta_used}`}>
-                          {typeof sigmaUsed === 'number' ? sigmaUsed.toFixed(1) : sigmaUsed}
+                        <td className="p-2 text-center">
+                          {pick.result ? (
+                            <Badge className={
+                              pick.result === 'WIN' ? 'bg-green-500/20 text-green-400' :
+                              pick.result === 'LOSS' ? 'bg-red-500/20 text-red-400' :
+                              'bg-zinc-500/20 text-zinc-400'
+                            }>
+                              {pick.result}
+                            </Badge>
+                          ) : (
+                            <span className="text-zinc-600 text-xs">-</span>
+                          )}
                         </td>
+                      </tr>
                         <td className="p-2 text-center">
                           <span className="font-mono text-[9px] text-zinc-500">{pick.calibration_id?.slice(-8)}</span>
                         </td>
