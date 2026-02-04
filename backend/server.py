@@ -2864,6 +2864,21 @@ async def generate_picks(user=Depends(get_current_user)):
         # Adjusted edge after shrinkage
         adjusted_edge = beta * model_edge + alpha
         
+        # PAPER TRADING v4.0: Anti-blowout filter fields
+        # is_favorite_pick: True if we're betting on the favorite (spread < 0 for home, spread > 0 for away)
+        spread_abs = abs(market_spread)
+        if recommended_side == "HOME":
+            is_favorite_pick = market_spread < 0  # Home is favorite if spread is negative
+        else:  # AWAY
+            is_favorite_pick = market_spread > 0  # Away is favorite if spread is positive
+        
+        # Blowout filter: exclude favorites with high pred_margin predictions
+        blowout_filter_hit = (
+            blowout_filter_enabled and 
+            is_favorite_pick and 
+            abs(pred_margin) > blowout_threshold
+        )
+        
         # TIER CLASSIFICATION (Paper Trading)
         # Tier A (Core): EV >= 5%
         # Tier B (Exploration): 2% <= EV < 5%
@@ -2948,15 +2963,23 @@ async def generate_picks(user=Depends(get_current_user)):
             "model_id": model_id,
             "model_version": model_version,
             "created_at": now_ts,
+            # Paper Trading v4.0: Anti-blowout fields
+            "is_favorite_pick": is_favorite_pick,
+            "spread_abs": round(spread_abs, 1),
+            "blowout_filter_hit": blowout_filter_hit,
             # Close line info (to be filled later via snapshot)
             "close_spread": None,
             "close_price": None,
             "close_ts": None,
             "clv_spread": None,
             # Result info (to be filled later)
-            "final_home_pts": None,
-            "final_away_pts": None,
-            "ats_result": None
+            "result": None,
+            "final_home_score": None,
+            "final_away_score": None,
+            "margin_final": None,
+            "covered": None,
+            "profit_units": None,
+            "settled_at": None
         }
         
         await db.predictions.update_one(
