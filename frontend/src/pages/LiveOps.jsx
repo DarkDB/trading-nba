@@ -57,6 +57,30 @@ export default function LiveOps() {
     }
   };
 
+  const loadTradingSettings = async () => {
+    try {
+      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/trading/settings`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
+      });
+      const data = await response.json();
+      setTradingSettings(data);
+    } catch (e) {
+      console.error('Error loading trading settings:', e);
+    }
+  };
+
+  const loadBankrollSim = async () => {
+    try {
+      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/report/bankroll-sim?bankrolls=1000,5000,10000&tiers=A,B&stake_mode=FLAT&blowout_filter=true`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
+      });
+      const data = await response.json();
+      setBankrollSim(data);
+    } catch (e) {
+      console.error('Error loading bankroll sim:', e);
+    }
+  };
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -65,8 +89,12 @@ export default function LiveOps() {
         statsApi.getModel(),
       ]);
       
-      // Also load active calibration
-      await loadActiveCalibration();
+      // Also load active calibration and trading settings
+      await Promise.all([
+        loadActiveCalibration(),
+        loadTradingSettings(),
+        loadBankrollSim()
+      ]);
       
       // Load picks and organize by tier
       const picks = picksRes.data.picks || [];
