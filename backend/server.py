@@ -2720,12 +2720,13 @@ async def get_upcoming(user=Depends(get_current_user)):
 @api_router.post("/picks/generate")
 async def generate_picks(user=Depends(get_current_user)):
     """
-    Generate picks with VS_MARKET calibration - PAPER TRADING MODE v3.0
+    Generate picks with VS_MARKET calibration - PAPER TRADING MODE v4.0
     
     Requirements:
     - MUST have an active, auditable calibration (no fallbacks)
     - All picks classified by tier (A, B, C) based on EV
     - Full traceability: every pick contains calibration_id and all parameters
+    - Anti-blowout filter for favorites with high pred_margin
     - No max_picks_per_day limit (max volume for paper trading)
     """
     import numpy as np
@@ -2756,6 +2757,15 @@ async def generate_picks(user=Depends(get_current_user)):
             status_code=400,
             detail="CALIBRATION_NOT_AUDITABLE: The active calibration is not marked as auditable. Re-run calibration."
         )
+    
+    # Get trading settings for blowout filter (Paper Trading v4.0)
+    trading_settings = await db.trading_settings.find_one({"_id": "default"})
+    if not trading_settings:
+        trading_settings = DEFAULT_TRADING_SETTINGS
+    
+    blowout_filter_enabled = trading_settings.get('blowout_filter_enabled', True)
+    blowout_threshold = trading_settings.get('blowout_pred_margin_threshold', 12.0)
+    enabled_tiers = trading_settings.get('enabled_tiers', ['A', 'B'])
     
     # Extract ALL calibration parameters - no defaults allowed
     calibration_id = calibration.get('calibration_id')
@@ -2794,6 +2804,8 @@ async def generate_picks(user=Depends(get_current_user)):
     tier_a_picks = []  # EV >= 5%
     tier_b_picks = []  # 2% <= EV < 5%
     tier_c_picks = []  # -1% <= EV <= 1% (control)
+    blowout_filtered_picks = []  # Picks excluded by blowout filter
+    blowout_filtered_count = 0
     
     for event in events:
         lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
