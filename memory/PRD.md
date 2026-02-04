@@ -1,174 +1,199 @@
 # NBA Edge - PRD (Product Requirements Document)
 
-## ⚠️ STATUS: PRODUCTION v3.0 – PAPER TRADING MODE ⚠️
+## ⚠️ STATUS: PRODUCTION v4.0 – PAPER TRADING MODE ⚠️
 
-**Version:** 3.0  
-**Updated:** 23 Enero 2026  
+**Version:** 4.0  
+**Updated:** 04 Febrero 2026  
 **Model Version:** v1.0  
-**Selection Criterion:** Tiers by EV (A≥5%, B:2-5%, C:-1% to +1%)
+**Selection Criterion:** Tiers by EV + Blowout Filter
 
 ---
 
-## CAMBIO PRINCIPAL v3.0: Paper Trading Mode
+## CAMBIO PRINCIPAL v4.0: Paper Trading con Tracking Completo
 
-### Antes (v2.0)
-- Selección por `EV ≥ 2%`
-- Sigma calibrado en memoria
-- Sin trazabilidad completa
-
-### Ahora (v3.0)
-- **Persistencia total**: Calibración en MongoDB (`calibrations` collection)
-- **Trazabilidad completa**: Cada pick guarda `calibration_id` y todos los parámetros
-- **Shrinkage Bayesiano**: `beta_effective` y `alpha_effective` ponderados con priors conservadores
-- **Picks por Tiers**: A (EV≥5%), B (2%≤EV<5%), C (-1%≤EV≤+1%)
-- **Sin límite diario**: Máximo volumen para paper trading
+### Nuevas Funcionalidades
+- **Configuración persistente**: Colección `trading_settings` en MongoDB
+- **Filtro anti-blowout**: Excluye favoritos con pred_margin > threshold
+- **Registro de resultados**: `POST /api/picks/:id/result` con WIN/LOSS/PUSH
+- **Snapshot Close**: `POST /api/admin/snapshot-close` para closing lines y CLV
+- **Simulación bankroll**: `GET /api/admin/report/bankroll-sim` con múltiples bankrolls
+- **UI actualizada**: Panel Paper Trading v4.0 Stats con KPIs
 
 ---
 
-## Fórmulas Implementadas (v3.0)
+## Endpoints Paper Trading v4.0
 
-### VS_MARKET Calibration
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/admin/trading/settings` | GET | Obtener configuración de trading |
+| `/api/admin/trading/settings` | POST | Actualizar configuración |
+| `/api/picks/:id/result` | POST | Registrar resultado final |
+| `/api/admin/snapshot-close` | POST | Capturar closing lines |
+| `/api/admin/report/bankroll-sim` | GET | Simulación de bankroll |
+
+---
+
+## Trading Settings Schema
+
+```json
+{
+  "enabled_tiers": ["A", "B"],
+  "blowout_filter_enabled": true,
+  "blowout_pred_margin_threshold": 12.0,
+  "stake_mode": "FLAT",
+  "flat_stake_pct": 0.01,
+  "kelly_fraction": 0.20,
+  "kelly_cap_pct": 0.02
+}
 ```
-model_edge = pred_margin - cover_threshold
-adjusted_edge = beta_effective × model_edge + alpha_effective
-z = adjusted_edge / sigma_residual
 
-Si pick=HOME: p_cover = NormalCDF(z)
-Si pick=AWAY: p_cover = NormalCDF(-z)
-```
+---
 
-### Shrinkage Bayesiano
+## Filtro Anti-Blowout
+
+**Lógica:**
 ```python
-# Weight based on sample size
-w = n_spread_samples / (n_spread_samples + k)  # k=200
+is_favorite_pick = (
+    (recommended_side == "HOME" and open_spread < 0) or
+    (recommended_side == "AWAY" and open_spread > 0)
+)
 
-# Effective values (weighted average with priors)
-beta_effective = w × beta_reg + (1-w) × beta_prior  # beta_prior=0.25
-alpha_effective = w × alpha_reg + (1-w) × alpha_prior  # alpha_prior=0.0
-
-# Safety clamps
-beta_effective = clamp(beta_effective, 0.15, 0.65)
-alpha_effective = clamp(alpha_effective, -3.0, 3.0)
+blowout_filter_hit = (
+    blowout_filter_enabled and
+    is_favorite_pick and
+    abs(pred_margin) > blowout_threshold
+)
 ```
+
+**Campos añadidos por pick:**
+- `is_favorite_pick`: boolean
+- `spread_abs`: float
+- `blowout_filter_hit`: boolean
+
+---
+
+## Registro de Resultados
+
+**Input:**
+```json
+{
+  "final_home_score": 110,
+  "final_away_score": 105,
+  "result_override": null
+}
+```
+
+**Output:**
+```json
+{
+  "result": "WIN",
+  "margin_final": 5,
+  "spread_adjusted_margin": 8.5,
+  "covered": true,
+  "profit_units": 0.96,
+  "settled_at": "2026-02-04T09:46:06Z"
+}
+```
+
+**Grading Logic:**
+- HOME bet: covers if `margin_final + spread > 0`
+- AWAY bet: covers if `margin_final + spread < 0`
+- PUSH: `margin_final + spread == 0`
+
+---
+
+## Simulación Bankroll
+
+**Request:**
+```
+GET /api/admin/report/bankroll-sim?bankrolls=1000,5000,10000&tiers=A,B&stake_mode=FLAT&blowout_filter=true
+```
+
+**Response:**
+```json
+{
+  "bankroll_results": [
+    {
+      "initial_bankroll": 1000,
+      "final_bankroll": 999.18,
+      "profit": -0.82,
+      "roi_pct": -0.08,
+      "max_drawdown_pct": 1.5,
+      "winrate_pct": 50.0
+    }
+  ],
+  "tier_summary": {
+    "A": {"wins": 0, "losses": 1, "winrate_pct": 0.0},
+    "B": {"wins": 1, "losses": 0, "winrate_pct": 100.0}
+  }
+}
+```
+
+---
+
+## ✅ P0 v4.0 COMPLETADO (04 Febrero 2026)
+
+1. ✅ Trading settings persisten en MongoDB
+2. ✅ Filtro anti-blowout implementado (excluye 1 pick en test)
+3. ✅ Endpoint `/api/picks/:id/result` funcional (WIN/LOSS/PUSH)
+4. ✅ Endpoint `/api/admin/snapshot-close` funcional
+5. ✅ Endpoint `/api/admin/report/bankroll-sim` funcional
+6. ✅ UI Paper Trading v4.0 Stats con KPIs
+7. ✅ Settings persisten tras reinicio del servidor
+
+---
+
+## Fórmulas Implementadas
 
 ### Expected Value
 ```
 EV = p_cover × open_price - 1
 ```
 
-### Tier Classification
-| Tier | EV Range | Purpose |
-|------|----------|---------|
-| A | EV ≥ 5% | Core picks - Highest expected value |
-| B | 2% ≤ EV < 5% | Exploration picks - Moderate edge |
-| C | -1% ≤ EV ≤ +1% | Control picks - Baseline/validation |
+### Kelly Criterion (stake sizing)
+```
+kelly_optimal = (p_cover × (price-1) - (1-p_cover)) / (price-1)
+stake = bankroll × min(kelly_fraction × kelly_optimal, kelly_cap_pct)
+```
 
----
-
-## Campos por Pick (v3.0)
-
-| Columna | Descripción |
-|---------|-------------|
-| `calibration_id` | ID de la calibración usada |
-| `probability_mode` | "VS_MARKET" |
-| `beta_used` | beta_effective usado |
-| `alpha_used` | alpha_effective usado |
-| `sigma_used` | sigma_residual usado |
-| `w_used` | Peso del shrinkage |
-| `k_used` | Constante de shrinkage |
-| `beta_reg` | beta de regresión (raw) |
-| `beta_prior` | prior de beta (0.25) |
-| `alpha_reg` | alpha de regresión (raw) |
-| `alpha_prior` | prior de alpha (0.0) |
-| `beta_effective` | beta efectivo final |
-| `alpha_effective` | alpha efectivo final |
-| `open_spread` | Spread de apertura |
-| `open_price` | Precio de apertura |
-| `implied_prob` | Probabilidad implícita |
-| `p_cover` | Probabilidad de cubrir |
-| `ev` | Expected Value |
-| `tier` | A, B o C |
-| `book` | Casa de apuestas (Pinnacle) |
-
----
-
-## Endpoints (v3.0)
-
-| Endpoint | Descripción |
-|----------|-------------|
-| `POST /api/admin/model/calibrate-vs-market` | Crear nueva calibración VS_MARKET |
-| `GET /api/admin/calibration/current` | Obtener calibración activa con todos los campos |
-| `POST /api/picks/generate` | Generar picks por tiers (Paper Trading v3.0) |
-| `GET /api/audit/model-sanity` | Auditoría de sanidad del modelo |
-| `POST /api/admin/calibration/lock` | Bloquear calibración |
-
----
-
-## Colección `calibrations` Schema
-
-```json
-{
-  "calibration_id": "calib_20260123_090928",
-  "probability_mode": "VS_MARKET",
-  "beta_effective": 0.25,
-  "alpha_effective": 0.2982,
-  "sigma_residual": 14.55,
-  "beta_reg": 1.0019,
-  "beta_prior": 0.25,
-  "alpha_reg": 2.1057,
-  "alpha_prior": 0.0,
-  "k_used": 200,
-  "w_used": 0.1416,
-  "beta_clamped": true,
-  "alpha_clamped": false,
-  "n_spread_samples": 33,
-  "n_residual_samples": 729,
-  "beta_source": "regression",
-  "sigma_source": "historical_residuals",
-  "computed_at": "2026-01-23T09:09:28.064926+00:00",
-  "data_cutoff": "2026-01-23",
-  "model_version": "20260123_084651",
-  "is_active": true,
-  "is_locked": false,
-  "is_auditable": true
-}
+### CLV (Closing Line Value)
+```
+HOME bet: CLV = open_spread - close_spread
+AWAY bet: CLV = close_spread - open_spread
 ```
 
 ---
 
-## UI Live Ops (v3.0)
+## Code Architecture
 
-- **Header**: Botones de Tier selector (A, B, C) con conteos
-- **Calibration Panel**: Muestra todos los parámetros de shrinkage
-- **Tier Thresholds**: Badges explicando cada tier
-- **Picks Table**: Columnas Partido, Tier, Apuesta, Price, Impl%, p_cover, EV%, Pred, σ, Calib ID
-- **PickCard**: Muestra calibration_id, β, σ, w en cada pick
-
----
-
-## ✅ P0 COMPLETADO (23 Enero 2026)
-
-1. ✅ Calibración persiste en MongoDB
-2. ✅ No-regresión: 3 reinicios sin cambio de valores
-3. ✅ Generate picks con tiers (A:26, B:9, C:4)
-4. ✅ Trazabilidad completa por pick
-5. ✅ UI actualizada con tier selector
-6. ✅ Audit y Generate usan mismo calibration_id
+```
+/app/
+├── backend/
+│   ├── server.py       # ~3100 líneas con todos los endpoints
+│   ├── .env
+│   └── requirements.txt
+├── frontend/
+│   ├── src/pages/LiveOps.jsx  # UI principal con Paper Trading Stats
+│   └── ...
+└── memory/
+    └── PRD.md
+```
 
 ---
 
-## BACKLOG (P1-P3)
+## BACKLOG
 
 ### P1 - Próximas Tareas
-- `POST /api/picks/:id/result` - Registrar resultados manuales
-- Snapshot Close (T-60) - Guardar closing lines
+- Automatizar captura de closing lines (cron job)
+- Añadir filtros de fecha en UI
+- Export CSV de resultados
 
 ### P2 - Funcionalidades Pendientes
-- CLV automático (Closing Line Value)
-- Reportes de rendimiento por Tier
-- Export CSV mejorado
+- Dashboard de performance histórico
+- Gráfico de bankroll evolution
+- Alertas de draws (drawdown threshold)
 
 ### P3 - Backlog
 - Implementar `defensive_rating` real
-- Dashboard de performance histórico
-- Automatización de resultados
+- Multi-book arbitrage detection
+- API para telegram/discord alerts
