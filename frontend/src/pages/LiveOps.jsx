@@ -890,10 +890,6 @@ export default function LiveOps() {
                           )}
                         </td>
                       </tr>
-                        <td className="p-2 text-center">
-                          <span className="font-mono text-[9px] text-zinc-500">{pick.calibration_id?.slice(-8)}</span>
-                        </td>
-                      </tr>
                     );
                   })}
                 </tbody>
