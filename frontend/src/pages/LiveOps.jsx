@@ -531,65 +531,120 @@ export default function LiveOps() {
       </Card>
 
       {/* Paper Trading v4.0 Stats Panel */}
-      {bankrollSim && (
+      {(bankrollSim || paperTradingStats) && (
         <Card className="bg-card border-border border-purple-500/30">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="font-headings text-lg text-white flex items-center gap-2">
                 <DollarSign className="w-5 h-5 text-purple-500" />
                 Paper Trading v4.0 Stats
+                <span className="text-[10px] font-mono text-zinc-500 ml-2">(SOURCE: db.predictions)</span>
               </CardTitle>
-              <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/50">
-                {bankrollSim.picks_analyzed} settled picks
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/50">
+                  {paperTradingStats?.counts?.total || bankrollSim?.picks_analyzed || 0} settled picks
+                </Badge>
+                <Button
+                  onClick={() => loadPaperTradingStats('A,B')}
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
-            {/* KPIs Row */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-              {bankrollSim.bankroll_results?.slice(0, 1).map((br, idx) => (
-                <React.Fragment key={idx}>
-                  <div className="p-3 bg-zinc-900/50 rounded">
-                    <p className="text-xs text-zinc-500 uppercase">Winrate</p>
-                    <p className={`font-data text-2xl ${br.winrate_pct >= 52 ? 'text-green-400' : 'text-zinc-300'}`}>
-                      {br.winrate_pct.toFixed(1)}%
-                    </p>
-                    <p className="text-xs text-zinc-500">{br.wins}W / {br.losses}L / {br.pushes}P</p>
-                  </div>
-                  <div className="p-3 bg-zinc-900/50 rounded">
-                    <p className="text-xs text-zinc-500 uppercase">ROI</p>
-                    <p className={`font-data text-2xl ${br.roi_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {br.roi_pct >= 0 ? '+' : ''}{br.roi_pct.toFixed(2)}%
-                    </p>
-                    <p className="text-xs text-zinc-500">on €{br.initial_bankroll}</p>
-                  </div>
-                  <div className="p-3 bg-zinc-900/50 rounded">
-                    <p className="text-xs text-zinc-500 uppercase">Profit</p>
-                    <p className={`font-data text-2xl ${br.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {br.profit >= 0 ? '+' : ''}€{br.profit.toFixed(2)}
-                    </p>
-                    <p className="text-xs text-zinc-500">Max DD: {br.max_drawdown_pct.toFixed(1)}%</p>
-                  </div>
-                  <div className="p-3 bg-zinc-900/50 rounded">
-                    <p className="text-xs text-zinc-500 uppercase">Total Bets</p>
-                    <p className="font-data text-2xl text-white">{br.total_bets}</p>
-                    <p className="text-xs text-zinc-500">FLAT {(tradingSettings?.flat_stake_pct * 100) || 1}%</p>
-                  </div>
-                </React.Fragment>
-              ))}
-            </div>
+            {/* KPIs Row - From paper-trading/stats endpoint */}
+            {paperTradingStats ? (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
+                <div className="p-3 bg-zinc-900/50 rounded">
+                  <p className="text-xs text-zinc-500 uppercase">Winrate</p>
+                  <p className={`font-data text-2xl ${paperTradingStats.performance.winrate_pct >= 52 ? 'text-green-400' : 'text-zinc-300'}`}>
+                    {paperTradingStats.performance.winrate_pct.toFixed(1)}%
+                  </p>
+                  <p className="text-xs text-zinc-500">{paperTradingStats.counts.wins}W / {paperTradingStats.counts.losses}L / {paperTradingStats.counts.pushes}P</p>
+                </div>
+                <div className="p-3 bg-zinc-900/50 rounded">
+                  <p className="text-xs text-zinc-500 uppercase">ROI</p>
+                  <p className={`font-data text-2xl ${paperTradingStats.performance.roi_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {paperTradingStats.performance.roi_pct >= 0 ? '+' : ''}{paperTradingStats.performance.roi_pct.toFixed(2)}%
+                  </p>
+                  <p className="text-xs text-zinc-500">on €{paperTradingStats.performance.reference_bankroll}</p>
+                </div>
+                <div className="p-3 bg-zinc-900/50 rounded">
+                  <p className="text-xs text-zinc-500 uppercase">Profit</p>
+                  <p className={`font-data text-2xl ${paperTradingStats.performance.profit_eur >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {paperTradingStats.performance.profit_eur >= 0 ? '+' : ''}€{paperTradingStats.performance.profit_eur.toFixed(2)}
+                  </p>
+                  <p className="text-xs text-zinc-500">Max DD: {paperTradingStats.performance.max_drawdown_pct.toFixed(1)}%</p>
+                </div>
+                <div className="p-3 bg-zinc-900/50 rounded">
+                  <p className="text-xs text-zinc-500 uppercase">Avg EV</p>
+                  <p className={`font-data text-2xl ${paperTradingStats.averages.avg_ev >= 0.02 ? 'text-green-400' : 'text-zinc-300'}`}>
+                    {paperTradingStats.averages.avg_ev_pct}
+                  </p>
+                  <p className="text-xs text-zinc-500">p_cover: {paperTradingStats.averages.avg_p_cover_pct}</p>
+                </div>
+                <div className="p-3 bg-zinc-900/50 rounded">
+                  <p className="text-xs text-zinc-500 uppercase">Stake</p>
+                  <p className="font-data text-2xl text-white">{(paperTradingStats.performance.flat_stake_pct * 100).toFixed(1)}%</p>
+                  <p className="text-xs text-zinc-500">FLAT mode</p>
+                </div>
+              </div>
+            ) : bankrollSim?.bankroll_results?.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                {bankrollSim.bankroll_results.slice(0, 1).map((br, idx) => (
+                  <React.Fragment key={idx}>
+                    <div className="p-3 bg-zinc-900/50 rounded">
+                      <p className="text-xs text-zinc-500 uppercase">Winrate</p>
+                      <p className={`font-data text-2xl ${br.winrate_pct >= 52 ? 'text-green-400' : 'text-zinc-300'}`}>
+                        {br.winrate_pct.toFixed(1)}%
+                      </p>
+                      <p className="text-xs text-zinc-500">{br.wins}W / {br.losses}L / {br.pushes}P</p>
+                    </div>
+                    <div className="p-3 bg-zinc-900/50 rounded">
+                      <p className="text-xs text-zinc-500 uppercase">ROI</p>
+                      <p className={`font-data text-2xl ${br.roi_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {br.roi_pct >= 0 ? '+' : ''}{br.roi_pct.toFixed(2)}%
+                      </p>
+                      <p className="text-xs text-zinc-500">on €{br.initial_bankroll}</p>
+                    </div>
+                    <div className="p-3 bg-zinc-900/50 rounded">
+                      <p className="text-xs text-zinc-500 uppercase">Profit</p>
+                      <p className={`font-data text-2xl ${br.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {br.profit >= 0 ? '+' : ''}€{br.profit.toFixed(2)}
+                      </p>
+                      <p className="text-xs text-zinc-500">Max DD: {br.max_drawdown_pct.toFixed(1)}%</p>
+                    </div>
+                    <div className="p-3 bg-zinc-900/50 rounded">
+                      <p className="text-xs text-zinc-500 uppercase">Total Bets</p>
+                      <p className="font-data text-2xl text-white">{br.total_bets}</p>
+                      <p className="text-xs text-zinc-500">FLAT {(tradingSettings?.flat_stake_pct * 100) || 1}%</p>
+                    </div>
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
             
             {/* Tier Breakdown */}
             <div className="flex gap-4 flex-wrap">
-              {bankrollSim.tier_summary && Object.entries(bankrollSim.tier_summary).map(([tier, data]) => (
-                <div key={tier} className="p-2 bg-zinc-800/50 rounded flex items-center gap-2">
+              {(paperTradingStats?.tier_breakdown || bankrollSim?.tier_summary) && 
+                Object.entries(paperTradingStats?.tier_breakdown || bankrollSim?.tier_summary).map(([tier, data]) => (
+                <Button
+                  key={tier}
+                  onClick={() => loadPaperTradingStats(tier)}
+                  variant="ghost"
+                  className="p-2 bg-zinc-800/50 rounded flex items-center gap-2 hover:bg-zinc-700/50"
+                >
                   <Badge className={tier === 'A' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}>
                     Tier {tier}
                   </Badge>
                   <span className="text-xs text-zinc-300">
-                    {data.wins}W/{data.losses}L ({data.winrate_pct.toFixed(0)}%)
+                    {data.wins}W/{data.losses}L ({data.winrate_pct?.toFixed(0) || 0}%)
                   </span>
-                </div>
+                </Button>
               ))}
               
               {/* Blowout Filter Status */}
