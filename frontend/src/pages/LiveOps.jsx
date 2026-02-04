@@ -32,10 +32,14 @@ export default function LiveOps() {
   const [modelInfo, setModelInfo] = useState(null);
   const [auditReport, setAuditReport] = useState(null);
   const [activeCalibration, setActiveCalibration] = useState(null);
+  const [tradingSettings, setTradingSettings] = useState(null);
+  const [bankrollSim, setBankrollSim] = useState(null);
   const [showAudit, setShowAudit] = useState(false);
+  const [showPaperTrading, setShowPaperTrading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState({});
   const [selectedTier, setSelectedTier] = useState('A');
+  const [blowoutFiltered, setBlowoutFiltered] = useState([]);
 
   useEffect(() => {
     loadData();
