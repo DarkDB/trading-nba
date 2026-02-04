@@ -2989,6 +2989,12 @@ async def generate_picks(user=Depends(get_current_user)):
         
         picks.append(pick)
         
+        # Paper Trading v4.0: Track blowout filtered picks
+        if blowout_filter_hit:
+            blowout_filtered_picks.append(pick)
+            blowout_filtered_count += 1
+            continue  # Don't add to tier lists if blowout filtered
+        
         # Classify into tier lists (Paper Trading v3.0)
         if tier == "A":
             tier_a_picks.append(pick)
@@ -3003,12 +3009,13 @@ async def generate_picks(user=Depends(get_current_user)):
     tier_c_picks.sort(key=lambda p: abs(p['ev']))  # C closer to 0 EV first
     
     # Log stats
-    logger.info(f"Generated {len(picks)} picks. Tier A: {len(tier_a_picks)}, Tier B: {len(tier_b_picks)}, Tier C: {len(tier_c_picks)}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
+    logger.info(f"Generated {len(picks)} picks. Tier A: {len(tier_a_picks)}, Tier B: {len(tier_b_picks)}, Tier C: {len(tier_c_picks)}, Blowout filtered: {blowout_filtered_count}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
     
-    # PAPER TRADING v3.0 Response - All picks with tier classification
+    # PAPER TRADING v4.0 Response - All picks with tier classification and blowout info
     return {
         "status": "success",
         "paper_trading_mode": True,
+        "paper_trading_version": "4.0",
         "calibration_id": calibration_id,
         "probability_mode": probability_mode,
         "calibration": {
@@ -3026,6 +3033,11 @@ async def generate_picks(user=Depends(get_current_user)):
             "sigma_source": sigma_source,
             "computed_at": calibration_computed_at
         },
+        "trading_settings": {
+            "enabled_tiers": enabled_tiers,
+            "blowout_filter_enabled": blowout_filter_enabled,
+            "blowout_threshold": blowout_threshold
+        },
         "tier_thresholds": {
             "A": "EV >= 5%",
             "B": "2% <= EV < 5%",
@@ -3036,13 +3048,15 @@ async def generate_picks(user=Depends(get_current_user)):
             "total_valid_picks": len(picks),
             "tier_a_count": len(tier_a_picks),
             "tier_b_count": len(tier_b_picks),
-            "tier_c_count": len(tier_c_picks)
+            "tier_c_count": len(tier_c_picks),
+            "blowout_filtered_count": blowout_filtered_count
         },
         "tiers": {
             "A": tier_a_picks,
             "B": tier_b_picks,
             "C": tier_c_picks
         },
+        "blowout_filtered": blowout_filtered_picks,
         "all_picks": picks,
         "generated_at": datetime.now(timezone.utc).isoformat()
     }
