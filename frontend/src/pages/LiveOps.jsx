@@ -515,6 +515,84 @@ export default function LiveOps() {
         </CardContent>
       </Card>
 
+      {/* Paper Trading v4.0 Stats Panel */}
+      {bankrollSim && (
+        <Card className="bg-card border-border border-purple-500/30">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="font-headings text-lg text-white flex items-center gap-2">
+                <DollarSign className="w-5 h-5 text-purple-500" />
+                Paper Trading v4.0 Stats
+              </CardTitle>
+              <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/50">
+                {bankrollSim.picks_analyzed} settled picks
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {/* KPIs Row */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+              {bankrollSim.bankroll_results?.slice(0, 1).map((br, idx) => (
+                <React.Fragment key={idx}>
+                  <div className="p-3 bg-zinc-900/50 rounded">
+                    <p className="text-xs text-zinc-500 uppercase">Winrate</p>
+                    <p className={`font-data text-2xl ${br.winrate_pct >= 52 ? 'text-green-400' : 'text-zinc-300'}`}>
+                      {br.winrate_pct.toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-zinc-500">{br.wins}W / {br.losses}L / {br.pushes}P</p>
+                  </div>
+                  <div className="p-3 bg-zinc-900/50 rounded">
+                    <p className="text-xs text-zinc-500 uppercase">ROI</p>
+                    <p className={`font-data text-2xl ${br.roi_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {br.roi_pct >= 0 ? '+' : ''}{br.roi_pct.toFixed(2)}%
+                    </p>
+                    <p className="text-xs text-zinc-500">on €{br.initial_bankroll}</p>
+                  </div>
+                  <div className="p-3 bg-zinc-900/50 rounded">
+                    <p className="text-xs text-zinc-500 uppercase">Profit</p>
+                    <p className={`font-data text-2xl ${br.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {br.profit >= 0 ? '+' : ''}€{br.profit.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-zinc-500">Max DD: {br.max_drawdown_pct.toFixed(1)}%</p>
+                  </div>
+                  <div className="p-3 bg-zinc-900/50 rounded">
+                    <p className="text-xs text-zinc-500 uppercase">Total Bets</p>
+                    <p className="font-data text-2xl text-white">{br.total_bets}</p>
+                    <p className="text-xs text-zinc-500">FLAT {(tradingSettings?.flat_stake_pct * 100) || 1}%</p>
+                  </div>
+                </React.Fragment>
+              ))}
+            </div>
+            
+            {/* Tier Breakdown */}
+            <div className="flex gap-4 flex-wrap">
+              {bankrollSim.tier_summary && Object.entries(bankrollSim.tier_summary).map(([tier, data]) => (
+                <div key={tier} className="p-2 bg-zinc-800/50 rounded flex items-center gap-2">
+                  <Badge className={tier === 'A' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}>
+                    Tier {tier}
+                  </Badge>
+                  <span className="text-xs text-zinc-300">
+                    {data.wins}W/{data.losses}L ({data.winrate_pct.toFixed(0)}%)
+                  </span>
+                </div>
+              ))}
+              
+              {/* Blowout Filter Status */}
+              {tradingSettings && (
+                <div className="p-2 bg-zinc-800/50 rounded flex items-center gap-2">
+                  <Badge className={tradingSettings.blowout_filter_enabled ? 'bg-orange-500/20 text-orange-400' : 'bg-zinc-500/20 text-zinc-400'}>
+                    Blowout Filter
+                  </Badge>
+                  <span className="text-xs text-zinc-300">
+                    {tradingSettings.blowout_filter_enabled ? `ON (>${tradingSettings.blowout_pred_margin_threshold}pt)` : 'OFF'}
+                  </span>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tier Thresholds Info */}
       <Card className="bg-zinc-900/50 border-border">
         <CardContent className="py-3">
