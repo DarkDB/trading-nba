@@ -175,6 +175,53 @@ class OperativePick(BaseModel):
     close_ts: Optional[str] = None
     clv_spread: Optional[float] = None
 
+# ============= PAPER TRADING v4.0 MODELS =============
+
+class TradingSettings(BaseModel):
+    """Paper Trading v4.0 configuration"""
+    enabled_tiers: List[str] = Field(default=["A", "B"])
+    blowout_filter_enabled: bool = Field(default=True)
+    blowout_pred_margin_threshold: float = Field(default=12.0)
+    stake_mode: str = Field(default="FLAT")  # FLAT or KELLY
+    flat_stake_pct: float = Field(default=0.01)  # 1% of bankroll
+    kelly_fraction: float = Field(default=0.20)  # 20% Kelly
+    kelly_cap_pct: float = Field(default=0.02)  # Max 2% per bet
+
+class TradingSettingsUpdate(BaseModel):
+    """Partial update for trading settings"""
+    enabled_tiers: Optional[List[str]] = None
+    blowout_filter_enabled: Optional[bool] = None
+    blowout_pred_margin_threshold: Optional[float] = None
+    stake_mode: Optional[str] = None
+    flat_stake_pct: Optional[float] = None
+    kelly_fraction: Optional[float] = None
+    kelly_cap_pct: Optional[float] = None
+
+class PickResultInput(BaseModel):
+    """Input for registering pick results"""
+    final_home_score: int
+    final_away_score: int
+    result_override: Optional[str] = None  # WIN/LOSS/PUSH/VOID (admin override)
+
+class PickResult(BaseModel):
+    """Pick result after grading"""
+    result: str  # WIN/LOSS/PUSH/VOID
+    margin_final: int  # actual margin (home - away)
+    covered: Optional[bool]  # True if bet covered
+    profit_units: float  # +price-1 for WIN, -1 for LOSS, 0 for PUSH
+    settled_at: str
+
+class SnapshotCloseInput(BaseModel):
+    """Input for snapshot close operation"""
+    window_minutes: int = Field(default=60)
+
+class BankrollSimRequest(BaseModel):
+    """Request for bankroll simulation"""
+    bankrolls: List[float] = Field(default=[1000, 3000, 5000, 10000])
+    tiers: List[str] = Field(default=["A", "B"])
+    stake_mode: str = Field(default="FLAT")
+    blowout_filter: bool = Field(default=True)
+
 class DebugPrediction(BaseModel):
     event_id: str
     home_team: str
