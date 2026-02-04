@@ -1555,6 +1555,173 @@ async def bankroll_simulation(
         "tier_summary": tier_summary
     }
 
+@api_router.get("/admin/paper-trading/stats")
+async def get_paper_trading_stats(
+    from_date: str = None,
+    to_date: str = None,
+    tiers: str = "A,B",
+    blowout_filter: bool = True,
+    user=Depends(get_current_user)
+):
+    """
+    Auditable Paper Trading Stats endpoint (v4.0).
+    
+    Returns calculated stats directly from DB predictions collection.
+    This is the SOURCE OF TRUTH for the UI panel.
+    """
+    import numpy as np
+    
+    tier_list = [t.strip().upper() for t in tiers.split(",")]
+    
+    # Get trading settings for blowout threshold
+    settings = await db.trading_settings.find_one({"_id": "default"})
+    if not settings:
+        settings = DEFAULT_TRADING_SETTINGS
+    
+    blowout_threshold = settings.get('blowout_pred_margin_threshold', 12.0)
+    flat_stake_pct = settings.get('flat_stake_pct', 0.01)
+    
+    # Build query
+    query = {
+        "result": {"$in": ["WIN", "LOSS", "PUSH"]},
+        "tier": {"$in": tier_list}
+    }
+    
+    # Add date filters if provided
+    if from_date:
+        query["settled_at"] = {"$gte": from_date}
+    if to_date:
+        if "settled_at" in query:
+            query["settled_at"]["$lte"] = to_date
+        else:
+            query["settled_at"] = {"$lte": to_date}
+    
+    # Get ALL settled picks matching criteria
+    all_picks = await db.predictions.find(query, {"_id": 0}).sort("settled_at", 1).to_list(1000)
+    
+    # Apply blowout filter if enabled
+    if blowout_filter:
+        picks = []
+        blowout_excluded = 0
+        for p in all_picks:
+            is_favorite = p.get('is_favorite_pick', False)
+            pred_margin = abs(p.get('pred_margin', 0))
+            blowout_hit = is_favorite and pred_margin > blowout_threshold
+            if not blowout_hit:
+                picks.append(p)
+            else:
+                blowout_excluded += 1
+    else:
+        picks = all_picks
+        blowout_excluded = 0
+    
+    # Calculate stats
+    wins = sum(1 for p in picks if p.get('result') == 'WIN')
+    losses = sum(1 for p in picks if p.get('result') == 'LOSS')
+    pushes = sum(1 for p in picks if p.get('result') == 'PUSH')
+    total = len(picks)
+    
+    # Avg metrics
+    odds_list = [p.get('open_price', 1.91) for p in picks]
+    ev_list = [p.get('ev', 0) for p in picks]
+    p_cover_list = [p.get('p_cover', 0.5) for p in picks]
+    
+    avg_odds = np.mean(odds_list) if odds_list else 0
+    avg_ev = np.mean(ev_list) if ev_list else 0
+    avg_p_cover = np.mean(p_cover_list) if p_cover_list else 0
+    
+    # Calculate profit/ROI with current flat_stake_pct
+    bankroll = 1000.0  # Reference bankroll
+    initial = bankroll
+    peak = bankroll
+    max_dd = 0
+    
+    for p in picks:
+        result = p.get('result')
+        price = p.get('open_price', 1.91)
+        stake = bankroll * flat_stake_pct
+        
+        if result == 'WIN':
+            bankroll += stake * (price - 1)
+        elif result == 'LOSS':
+            bankroll -= stake
+        # PUSH = no change
+        
+        if bankroll > peak:
+            peak = bankroll
+        dd = (peak - bankroll) / peak if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+    
+    profit = bankroll - initial
+    roi_pct = (profit / initial * 100) if initial > 0 else 0
+    winrate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+    
+    # Tier breakdown
+    tier_breakdown = {}
+    for tier in tier_list:
+        tier_picks = [p for p in picks if p.get('tier') == tier]
+        tw = sum(1 for p in tier_picks if p.get('result') == 'WIN')
+        tl = sum(1 for p in tier_picks if p.get('result') == 'LOSS')
+        tp = sum(1 for p in tier_picks if p.get('result') == 'PUSH')
+        tier_breakdown[tier] = {
+            "wins": tw,
+            "losses": tl,
+            "pushes": tp,
+            "total": len(tier_picks),
+            "winrate_pct": round(tw / (tw + tl) * 100, 2) if (tw + tl) > 0 else 0
+        }
+    
+    return {
+        "source": "db.predictions",
+        "query": {
+            "result": ["WIN", "LOSS", "PUSH"],
+            "tiers": tier_list,
+            "from_date": from_date,
+            "to_date": to_date,
+            "blowout_filter": blowout_filter,
+            "blowout_threshold": blowout_threshold
+        },
+        "counts": {
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
+            "total": total,
+            "blowout_excluded": blowout_excluded
+        },
+        "averages": {
+            "avg_odds": round(avg_odds, 3),
+            "avg_ev": round(avg_ev, 4),
+            "avg_ev_pct": f"{avg_ev * 100:.2f}%",
+            "avg_p_cover": round(avg_p_cover, 4),
+            "avg_p_cover_pct": f"{avg_p_cover * 100:.2f}%"
+        },
+        "performance": {
+            "winrate_pct": round(winrate, 2),
+            "roi_pct": round(roi_pct, 2),
+            "profit_eur": round(profit, 2),
+            "max_drawdown_pct": round(max_dd * 100, 2),
+            "reference_bankroll": initial,
+            "flat_stake_pct": flat_stake_pct
+        },
+        "tier_breakdown": tier_breakdown,
+        "picks_detail": [
+            {
+                "id": p.get('id'),
+                "matchup": f"{p.get('home_team', '?')[:15]} vs {p.get('away_team', '?')[:15]}",
+                "tier": p.get('tier'),
+                "result": p.get('result'),
+                "profit_units": p.get('profit_units'),
+                "open_price": p.get('open_price'),
+                "ev": p.get('ev'),
+                "p_cover": p.get('p_cover'),
+                "is_favorite": p.get('is_favorite_pick'),
+                "settled_at": p.get('settled_at')
+            }
+            for p in picks
+        ]
+    }
+
 @api_router.post("/admin/model/sigma/recompute")
 async def recompute_sigma(season: str = None, min_games: int = 100, user=Depends(get_current_user)):
     """
