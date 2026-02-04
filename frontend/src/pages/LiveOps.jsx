@@ -161,7 +161,11 @@ export default function LiveOps() {
             setPicksByTier(response.tiers || { A: [], B: [], C: [] });
             setAllPicks(response.all_picks || []);
             setPicksSummary(response.summary);
-            toast.success(`Paper Trading v3.0: ${response.summary?.tier_a_count || 0} Tier A, ${response.summary?.tier_b_count || 0} Tier B, ${response.summary?.tier_c_count || 0} Tier C`);
+            setBlowoutFiltered(response.blowout_filtered || []);
+            const bf = response.summary?.blowout_filtered_count || 0;
+            toast.success(`Paper Trading v4.0: ${response.summary?.tier_a_count || 0} Tier A, ${response.summary?.tier_b_count || 0} Tier B, ${response.summary?.tier_c_count || 0} Tier C${bf > 0 ? `, ${bf} blowout filtered` : ''}`);
+            // Refresh bankroll sim
+            loadBankrollSim();
             return;
           } else if (response.detail) {
             toast.error(response.detail);
@@ -169,7 +173,7 @@ export default function LiveOps() {
           }
           break;
         case 'snapshot-close':
-          response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/snapshot-close-lines?minutes_before=60`, {
+          response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/snapshot-close?window_minutes=60`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}`
