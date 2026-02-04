@@ -1154,6 +1154,407 @@ async def snapshot_close_lines(minutes_before: int = 60, user=Depends(get_curren
 async def refresh_results(user=Depends(get_current_user)):
     return SyncStatus(status="completed", message="Results refresh not yet implemented", details={})
 
+# ============= PAPER TRADING v4.0 ENDPOINTS =============
+
+# Default trading settings
+DEFAULT_TRADING_SETTINGS = {
+    "enabled_tiers": ["A", "B"],
+    "blowout_filter_enabled": True,
+    "blowout_pred_margin_threshold": 12.0,
+    "stake_mode": "FLAT",
+    "flat_stake_pct": 0.01,
+    "kelly_fraction": 0.20,
+    "kelly_cap_pct": 0.02,
+    "updated_at": None
+}
+
+@api_router.get("/admin/trading/settings")
+async def get_trading_settings(user=Depends(get_current_user)):
+    """Get current trading settings from DB"""
+    settings = await db.trading_settings.find_one({"_id": "default"}, {"_id": 0})
+    if not settings:
+        # Return defaults if not configured
+        return DEFAULT_TRADING_SETTINGS
+    return settings
+
+@api_router.post("/admin/trading/settings")
+async def update_trading_settings(update: TradingSettingsUpdate, user=Depends(get_current_user)):
+    """Update trading settings (persists to DB)"""
+    # Get current settings
+    current = await db.trading_settings.find_one({"_id": "default"})
+    if not current:
+        current = {**DEFAULT_TRADING_SETTINGS, "_id": "default"}
+    
+    # Apply updates
+    update_dict = update.model_dump(exclude_none=True)
+    for key, value in update_dict.items():
+        current[key] = value
+    current["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    # Save to DB
+    await db.trading_settings.update_one(
+        {"_id": "default"},
+        {"$set": current},
+        upsert=True
+    )
+    
+    # Return without _id
+    del current["_id"]
+    return current
+
+@api_router.post("/picks/{pick_id}/result")
+async def register_pick_result(pick_id: str, result_input: PickResultInput, user=Depends(get_current_user)):
+    """
+    Register final result for a pick (Paper Trading v4.0).
+    
+    Calculates WIN/LOSS/PUSH based on spread and final scores.
+    """
+    # Find the pick
+    pick = await db.predictions.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail=f"Pick not found: {pick_id}")
+    
+    # Calculate result
+    final_home_score = result_input.final_home_score
+    final_away_score = result_input.final_away_score
+    margin_final = final_home_score - final_away_score
+    
+    open_spread = pick.get('open_spread', 0)
+    open_price = pick.get('open_price', 1.91)
+    recommended_side = pick.get('recommended_side', 'HOME')
+    
+    # Calculate if bet covered
+    # HOME bet: covers if margin_final > -open_spread (or margin_final + spread > 0)
+    # AWAY bet: covers if margin_final < -open_spread (or margin_final + spread < 0)
+    # Note: spread is from home perspective (negative = home favorite)
+    
+    spread_adjusted_margin = margin_final + open_spread
+    
+    if result_input.result_override:
+        # Admin override
+        result = result_input.result_override.upper()
+        if result not in ["WIN", "LOSS", "PUSH", "VOID"]:
+            raise HTTPException(status_code=400, detail=f"Invalid result_override: {result}")
+    else:
+        # Calculate based on spread
+        if recommended_side == "HOME":
+            # Home bet wins if home margin exceeds the spread
+            # E.g., spread=-5 means home must win by >5
+            if spread_adjusted_margin > 0:
+                result = "WIN"
+            elif spread_adjusted_margin < 0:
+                result = "LOSS"
+            else:
+                result = "PUSH"
+        else:  # AWAY
+            # Away bet wins if home margin is less than the spread
+            if spread_adjusted_margin < 0:
+                result = "WIN"
+            elif spread_adjusted_margin > 0:
+                result = "LOSS"
+            else:
+                result = "PUSH"
+    
+    # Calculate profit
+    if result == "WIN":
+        profit_units = open_price - 1  # e.g., 1.91 -> +0.91 units
+        covered = True
+    elif result == "LOSS":
+        profit_units = -1.0
+        covered = False
+    elif result == "PUSH":
+        profit_units = 0.0
+        covered = None
+    else:  # VOID
+        profit_units = 0.0
+        covered = None
+    
+    settled_at = datetime.now(timezone.utc).isoformat()
+    
+    # Update pick in DB
+    update_doc = {
+        "result": result,
+        "final_home_score": final_home_score,
+        "final_away_score": final_away_score,
+        "margin_final": margin_final,
+        "spread_adjusted_margin": spread_adjusted_margin,
+        "covered": covered,
+        "profit_units": round(profit_units, 4),
+        "settled_at": settled_at
+    }
+    
+    await db.predictions.update_one(
+        {"id": pick_id},
+        {"$set": update_doc}
+    )
+    
+    return {
+        "pick_id": pick_id,
+        "home_team": pick.get('home_team'),
+        "away_team": pick.get('away_team'),
+        "recommended_side": recommended_side,
+        "open_spread": open_spread,
+        "open_price": open_price,
+        "final_score": f"{final_home_score}-{final_away_score}",
+        "margin_final": margin_final,
+        "spread_adjusted_margin": round(spread_adjusted_margin, 1),
+        "result": result,
+        "profit_units": round(profit_units, 4),
+        "covered": covered,
+        "settled_at": settled_at
+    }
+
+@api_router.post("/admin/snapshot-close")
+async def snapshot_close_v2(window_minutes: int = 60, user=Depends(get_current_user)):
+    """
+    Snapshot close lines for picks (Paper Trading v4.0).
+    
+    Captures close_spread, close_price for picks with events starting within window.
+    Calculates CLV if open line exists.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(minutes=window_minutes)
+    now_str = now.isoformat()
+    cutoff_str = cutoff.isoformat()
+    
+    # Find picks without close_spread for events starting soon
+    picks = await db.predictions.find({
+        "close_spread": None,
+        "commence_time": {"$lte": cutoff_str, "$gte": now_str}
+    }, {"_id": 0}).to_list(100)
+    
+    results = {
+        "updated": 0,
+        "on_time": 0,
+        "late": 0,
+        "missing": 0,
+        "samples": []
+    }
+    
+    for pick in picks:
+        event_id = pick.get('event_id')
+        
+        # Get latest Pinnacle line
+        line = await db.market_lines.find_one({
+            "event_id": event_id,
+            "bookmaker_key": "pinnacle"
+        }, {"_id": 0})
+        
+        if not line:
+            results["missing"] += 1
+            continue
+        
+        # Determine quality
+        commence_time = pick.get('commence_time', '')
+        try:
+            commence_dt = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
+            minutes_to_start = (commence_dt - now).total_seconds() / 60
+            
+            if minutes_to_start >= 30:
+                quality = "ON_TIME"
+                results["on_time"] += 1
+            else:
+                quality = "LATE"
+                results["late"] += 1
+        except:
+            quality = "UNKNOWN"
+        
+        recommended_side = pick.get('recommended_side', 'HOME')
+        open_spread = pick.get('open_spread', 0)
+        close_spread = line.get('spread_point_home', 0)
+        
+        if recommended_side == 'HOME':
+            close_price = line.get('price_home_decimal', 1.91)
+            clv_spread = open_spread - close_spread
+        else:
+            close_price = line.get('price_away_decimal', 1.91)
+            clv_spread = close_spread - open_spread
+        
+        # CLV price (optional)
+        open_price = pick.get('open_price', 1.91)
+        clv_price = close_price - open_price
+        
+        update_doc = {
+            "close_spread": close_spread,
+            "close_price": round(close_price, 3),
+            "close_captured_at": now_str,
+            "close_quality": quality,
+            "clv_spread": round(clv_spread, 2),
+            "clv_price": round(clv_price, 3)
+        }
+        
+        await db.predictions.update_one(
+            {"id": pick['id']},
+            {"$set": update_doc}
+        )
+        
+        results["updated"] += 1
+        
+        if len(results["samples"]) < 5:
+            results["samples"].append({
+                "pick_id": pick['id'],
+                "matchup": f"{pick.get('home_team')} vs {pick.get('away_team')}",
+                "open_spread": open_spread,
+                "close_spread": close_spread,
+                "clv_spread": round(clv_spread, 2),
+                "quality": quality
+            })
+    
+    return {
+        "status": "completed",
+        "window_minutes": window_minutes,
+        "results": results
+    }
+
+@api_router.get("/admin/report/bankroll-sim")
+async def bankroll_simulation(
+    bankrolls: str = "1000,3000,5000,10000",
+    tiers: str = "A,B",
+    stake_mode: str = "FLAT",
+    blowout_filter: bool = True,
+    user=Depends(get_current_user)
+):
+    """
+    Simulate bankroll performance across settled picks (Paper Trading v4.0).
+    
+    Returns profit/loss for each bankroll size.
+    """
+    # Parse params
+    bankroll_list = [float(b.strip()) for b in bankrolls.split(",")]
+    tier_list = [t.strip().upper() for t in tiers.split(",")]
+    
+    # Get trading settings
+    settings = await db.trading_settings.find_one({"_id": "default"})
+    if not settings:
+        settings = DEFAULT_TRADING_SETTINGS
+    
+    flat_stake_pct = settings.get('flat_stake_pct', 0.01)
+    kelly_fraction = settings.get('kelly_fraction', 0.20)
+    kelly_cap_pct = settings.get('kelly_cap_pct', 0.02)
+    blowout_threshold = settings.get('blowout_pred_margin_threshold', 12.0)
+    
+    # Get settled picks
+    query = {
+        "result": {"$in": ["WIN", "LOSS", "PUSH"]},
+        "tier": {"$in": tier_list}
+    }
+    
+    picks = await db.predictions.find(query, {"_id": 0}).sort("settled_at", 1).to_list(1000)
+    
+    # Apply blowout filter if enabled
+    if blowout_filter:
+        filtered_picks = []
+        for p in picks:
+            is_favorite = p.get('is_favorite_pick', False)
+            pred_margin = abs(p.get('pred_margin', 0))
+            
+            # Re-calculate if not stored
+            if 'is_favorite_pick' not in p:
+                is_favorite = p.get('open_spread', 0) < 0 and p.get('recommended_side') == 'HOME'
+                is_favorite = is_favorite or (p.get('open_spread', 0) > 0 and p.get('recommended_side') == 'AWAY')
+            
+            blowout_hit = is_favorite and pred_margin > blowout_threshold
+            if not blowout_hit:
+                filtered_picks.append(p)
+        picks = filtered_picks
+    
+    # Simulate for each bankroll
+    results = []
+    
+    for initial_bankroll in bankroll_list:
+        bankroll = initial_bankroll
+        peak = initial_bankroll
+        max_drawdown = 0
+        bets = 0
+        wins = 0
+        losses = 0
+        pushes = 0
+        
+        for pick in picks:
+            result = pick.get('result')
+            p_cover = pick.get('p_cover', 0.5)
+            open_price = pick.get('open_price', 1.91)
+            profit_units = pick.get('profit_units', 0)
+            
+            # Calculate stake
+            if stake_mode == "KELLY":
+                # Kelly criterion: f* = (p*b - q) / b where b = price-1, p = p_cover, q = 1-p
+                b = open_price - 1
+                p = p_cover
+                q = 1 - p
+                kelly_optimal = (p * b - q) / b if b > 0 else 0
+                kelly_stake = kelly_fraction * max(0, kelly_optimal)
+                stake_pct = min(kelly_stake, kelly_cap_pct)
+            else:  # FLAT
+                stake_pct = flat_stake_pct
+            
+            stake = bankroll * stake_pct
+            
+            # Apply result
+            if result == "WIN":
+                profit = stake * (open_price - 1)
+                bankroll += profit
+                wins += 1
+            elif result == "LOSS":
+                bankroll -= stake
+                losses += 1
+            else:  # PUSH
+                pushes += 1
+            
+            bets += 1
+            
+            # Track drawdown
+            if bankroll > peak:
+                peak = bankroll
+            drawdown = (peak - bankroll) / peak if peak > 0 else 0
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+        
+        profit = bankroll - initial_bankroll
+        roi_pct = (profit / initial_bankroll * 100) if initial_bankroll > 0 else 0
+        winrate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+        
+        results.append({
+            "initial_bankroll": initial_bankroll,
+            "final_bankroll": round(bankroll, 2),
+            "profit": round(profit, 2),
+            "roi_pct": round(roi_pct, 2),
+            "max_drawdown_pct": round(max_drawdown * 100, 2),
+            "total_bets": bets,
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
+            "winrate_pct": round(winrate, 2)
+        })
+    
+    # Summary by tier
+    tier_summary = {}
+    for tier in tier_list:
+        tier_picks = [p for p in picks if p.get('tier') == tier]
+        tier_wins = sum(1 for p in tier_picks if p.get('result') == 'WIN')
+        tier_losses = sum(1 for p in tier_picks if p.get('result') == 'LOSS')
+        tier_total = tier_wins + tier_losses
+        tier_summary[tier] = {
+            "total": len(tier_picks),
+            "wins": tier_wins,
+            "losses": tier_losses,
+            "winrate_pct": round(tier_wins / tier_total * 100, 2) if tier_total > 0 else 0
+        }
+    
+    return {
+        "simulation_params": {
+            "tiers": tier_list,
+            "stake_mode": stake_mode,
+            "blowout_filter": blowout_filter,
+            "flat_stake_pct": flat_stake_pct if stake_mode == "FLAT" else None,
+            "kelly_fraction": kelly_fraction if stake_mode == "KELLY" else None,
+            "kelly_cap_pct": kelly_cap_pct if stake_mode == "KELLY" else None
+        },
+        "picks_analyzed": len(picks),
+        "bankroll_results": results,
+        "tier_summary": tier_summary
+    }
+
 @api_router.post("/admin/model/sigma/recompute")
 async def recompute_sigma(season: str = None, min_games: int = 100, user=Depends(get_current_user)):
     """
