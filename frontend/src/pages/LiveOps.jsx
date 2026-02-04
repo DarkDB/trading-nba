@@ -81,6 +81,20 @@ export default function LiveOps() {
     }
   };
 
+  const [paperTradingStats, setPaperTradingStats] = useState(null);
+  
+  const loadPaperTradingStats = async (tiers = 'A,B') => {
+    try {
+      const response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/paper-trading/stats?tiers=${tiers}&blowout_filter=true`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}` }
+      });
+      const data = await response.json();
+      setPaperTradingStats(data);
+    } catch (e) {
+      console.error('Error loading paper trading stats:', e);
+    }
+  };
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -93,7 +107,8 @@ export default function LiveOps() {
       await Promise.all([
         loadActiveCalibration(),
         loadTradingSettings(),
-        loadBankrollSim()
+        loadBankrollSim(),
+        loadPaperTradingStats()
       ]);
       
       // Load picks and organize by tier
