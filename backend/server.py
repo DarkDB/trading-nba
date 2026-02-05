@@ -1304,6 +1304,150 @@ async def register_pick_result(pick_id: str, result_input: PickResultInput, user
         "settled_at": settled_at
     }
 
+@api_router.post("/admin/auto-grade-results")
+async def auto_grade_results(days_back: int = 3, user=Depends(get_current_user)):
+    """
+    Auto-grade picks using scores from The Odds API.
+    
+    Fetches completed game scores and updates WIN/LOSS/PUSH for pending picks.
+    """
+    import httpx
+    
+    # Fetch scores from API
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{ODDS_API_BASE}/sports/basketball_nba/scores",
+                params={
+                    'apiKey': ODDS_API_KEY,
+                    'daysFrom': days_back,
+                    'dateFormat': 'iso'
+                },
+                timeout=30.0
+            )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Odds API error: {resp.status_code}")
+            
+            games = resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch scores: {str(e)}")
+    
+    # Build lookup by event_id
+    completed_games = {}
+    for g in games:
+        if g.get('completed') and g.get('scores'):
+            scores = g['scores']
+            home_score = next((int(s['score']) for s in scores if s['name'] == g['home_team']), None)
+            away_score = next((int(s['score']) for s in scores if s['name'] == g['away_team']), None)
+            if home_score is not None and away_score is not None:
+                completed_games[g['id']] = {
+                    'home_team': g['home_team'],
+                    'away_team': g['away_team'],
+                    'home_score': home_score,
+                    'away_score': away_score
+                }
+    
+    # Find pending picks
+    pending_picks = await db.predictions.find(
+        {"result": None},
+        {"_id": 0}
+    ).to_list(500)
+    
+    results = {
+        "processed": 0,
+        "graded": 0,
+        "wins": 0,
+        "losses": 0,
+        "pushes": 0,
+        "not_found": 0,
+        "samples": []
+    }
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    for pick in pending_picks:
+        event_id = pick.get('event_id')
+        results["processed"] += 1
+        
+        if event_id not in completed_games:
+            results["not_found"] += 1
+            continue
+        
+        game = completed_games[event_id]
+        home_score = game['home_score']
+        away_score = game['away_score']
+        margin_final = home_score - away_score
+        
+        open_spread = pick.get('open_spread', 0)
+        open_price = pick.get('open_price', 1.91)
+        recommended_side = pick.get('recommended_side', 'HOME')
+        
+        # Calculate spread-adjusted margin
+        spread_adjusted_margin = margin_final + open_spread
+        
+        # Determine result
+        if recommended_side == "HOME":
+            if spread_adjusted_margin > 0:
+                result = "WIN"
+            elif spread_adjusted_margin < 0:
+                result = "LOSS"
+            else:
+                result = "PUSH"
+        else:  # AWAY
+            if spread_adjusted_margin < 0:
+                result = "WIN"
+            elif spread_adjusted_margin > 0:
+                result = "LOSS"
+            else:
+                result = "PUSH"
+        
+        # Calculate profit
+        if result == "WIN":
+            profit_units = open_price - 1
+            covered = True
+            results["wins"] += 1
+        elif result == "LOSS":
+            profit_units = -1.0
+            covered = False
+            results["losses"] += 1
+        else:
+            profit_units = 0.0
+            covered = None
+            results["pushes"] += 1
+        
+        # Update pick
+        await db.predictions.update_one(
+            {"id": pick['id']},
+            {"$set": {
+                "result": result,
+                "final_home_score": home_score,
+                "final_away_score": away_score,
+                "margin_final": margin_final,
+                "spread_adjusted_margin": round(spread_adjusted_margin, 1),
+                "covered": covered,
+                "profit_units": round(profit_units, 4),
+                "settled_at": now
+            }}
+        )
+        
+        results["graded"] += 1
+        
+        if len(results["samples"]) < 10:
+            results["samples"].append({
+                "matchup": f"{pick.get('home_team', '?')[:15]} vs {pick.get('away_team', '?')[:15]}",
+                "score": f"{home_score}-{away_score}",
+                "spread": open_spread,
+                "side": recommended_side,
+                "result": result,
+                "profit": round(profit_units, 2)
+            })
+    
+    return {
+        "status": "completed",
+        "games_from_api": len(completed_games),
+        "results": results
+    }
+
 @api_router.post("/admin/snapshot-close")
 async def snapshot_close_v2(window_minutes: int = 60, user=Depends(get_current_user)):
     """
