@@ -343,13 +343,23 @@ export default function LiveOps() {
             </Button>
             
             <Button
+              onClick={() => handleAction('auto-grade', 'grade')}
+              disabled={syncing.grade}
+              className="h-auto py-4 flex flex-col gap-2 bg-green-700 hover:bg-green-600"
+              data-testid="btn-auto-grade"
+            >
+              {syncing.grade ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
+              <span className="text-xs">4. Auto-Grade Results</span>
+            </Button>
+            
+            <Button
               onClick={() => handleAction('snapshot-close', 'close')}
               disabled={syncing.close}
               className="h-auto py-4 flex flex-col gap-2 bg-zinc-800 hover:bg-zinc-700"
               data-testid="btn-snapshot-close"
             >
               {syncing.close ? <Loader2 className="w-5 h-5 animate-spin" /> : <Clock className="w-5 h-5" />}
-              <span className="text-xs">4. Snapshot Close (T-60)</span>
+              <span className="text-xs">5. Snapshot Close</span>
             </Button>
           </div>
         </CardContent>
