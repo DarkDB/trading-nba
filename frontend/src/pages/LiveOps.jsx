@@ -179,11 +179,30 @@ export default function LiveOps() {
             setBlowoutFiltered(response.blowout_filtered || []);
             const bf = response.summary?.blowout_filtered_count || 0;
             toast.success(`Paper Trading v4.0: ${response.summary?.tier_a_count || 0} Tier A, ${response.summary?.tier_b_count || 0} Tier B, ${response.summary?.tier_c_count || 0} Tier C${bf > 0 ? `, ${bf} blowout filtered` : ''}`);
-            // Refresh bankroll sim
+            // Refresh stats
             loadBankrollSim();
+            loadPaperTradingStats();
             return;
           } else if (response.detail) {
             toast.error(response.detail);
+            return;
+          }
+          break;
+        case 'auto-grade':
+          response = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/auto-grade-results?days_back=3`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('nba_edge_token')}`
+            }
+          });
+          response = await response.json();
+          if (response.status === 'completed') {
+            const r = response.results;
+            toast.success(`Auto-graded ${r.graded} picks: ${r.wins}W / ${r.losses}L / ${r.pushes}P`);
+            // Refresh stats after grading
+            loadPaperTradingStats();
+            loadBankrollSim();
+            loadData();
             return;
           }
           break;
