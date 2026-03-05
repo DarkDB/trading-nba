@@ -11,11 +11,22 @@ from typing import List, Optional, Dict, Any
 import uuid
 import hashlib
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 import jwt
 import bcrypt
 import httpx
 import asyncio
 from contextlib import asynccontextmanager
+from backend.calibration_outcome import (
+    fit_outcome_calibration,
+    get_active_outcome_calibration,
+    get_outcome_calibration_diagnostics,
+    predict_p_cover_outcome,
+)
+from backend.market_eval import backfill_close_snapshot
+from backend.performance import recompute_performance_daily, get_performance_summary
+from backend.selection_backtest import run_selection_sweep
+from backend.walkforward_selection import run_walkforward_selection
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -182,6 +193,15 @@ class TradingSettings(BaseModel):
     enabled_tiers: List[str] = Field(default=["A", "B"])
     blowout_filter_enabled: bool = Field(default=True)
     blowout_pred_margin_threshold: float = Field(default=12.0)
+    max_picks_per_day: int = Field(default=3)
+    min_abs_model_edge: float = Field(default=1.5)
+    clv_gate_enabled: bool = Field(default=True)
+    dd_gate_enabled: bool = Field(default=True)
+    dd_gate_max_drawdown_threshold: float = Field(default=0.25)
+    use_outcome_calibration: bool = Field(default=True)
+    tier_a_min_p_cover_real: float = Field(default=0.54)
+    tier_b_min_p_cover_real: float = Field(default=0.52)
+    tier_c_min_p_cover_real: float = Field(default=0.50)
     stake_mode: str = Field(default="FLAT")  # FLAT or KELLY
     flat_stake_pct: float = Field(default=0.01)  # 1% of bankroll
     kelly_fraction: float = Field(default=0.20)  # 20% Kelly
@@ -192,6 +212,15 @@ class TradingSettingsUpdate(BaseModel):
     enabled_tiers: Optional[List[str]] = None
     blowout_filter_enabled: Optional[bool] = None
     blowout_pred_margin_threshold: Optional[float] = None
+    max_picks_per_day: Optional[int] = None
+    min_abs_model_edge: Optional[float] = None
+    clv_gate_enabled: Optional[bool] = None
+    dd_gate_enabled: Optional[bool] = None
+    dd_gate_max_drawdown_threshold: Optional[float] = None
+    use_outcome_calibration: Optional[bool] = None
+    tier_a_min_p_cover_real: Optional[float] = None
+    tier_b_min_p_cover_real: Optional[float] = None
+    tier_c_min_p_cover_real: Optional[float] = None
     stake_mode: Optional[str] = None
     flat_stake_pct: Optional[float] = None
     kelly_fraction: Optional[float] = None
@@ -221,6 +250,14 @@ class BankrollSimRequest(BaseModel):
     tiers: List[str] = Field(default=["A", "B"])
     stake_mode: str = Field(default="FLAT")
     blowout_filter: bool = Field(default=True)
+
+class OutcomeCalibrationRequest(BaseModel):
+    include_push_as_half: bool = Field(default=False)
+    min_samples: int = Field(default=50)
+
+class ImportPredictionsRequest(BaseModel):
+    path: str = Field(default="backend/data/predictions_settled.ndjson")
+    dry_run: bool = Field(default=False)
 
 class DebugPrediction(BaseModel):
     event_id: str
@@ -483,6 +520,14 @@ def format_local_time(dt_str: str) -> str:
     except:
         return dt_str
 
+def madrid_day_key(dt_str: str) -> Optional[str]:
+    """Return YYYY-MM-DD in Europe/Madrid for an ISO datetime string."""
+    try:
+        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+        return dt.astimezone(ZoneInfo("Europe/Madrid")).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
 def generate_explanation(home_team: str, away_team: str, home_abbr: str, away_abbr: str,
                         pred_margin: float, market_spread: float, edge_points: float,
                         recommended_side: str, confidence: str, model_version: str) -> str:
@@ -513,6 +558,124 @@ def generate_recommended_bet_string(home_team: str, away_team: str, home_abbr: s
     
     spread_str = f"{spread:+.1f}" if spread != 0 else "PK"
     return f"{team} {spread_str}"
+
+
+async def capture_closing_lines_task(window_minutes: int = 15, limit: int = 500) -> Dict[str, Any]:
+    """
+    Capture closing lines before event start (TheOddsAPI event odds endpoint expires after games).
+    """
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(minutes=5)
+    cutoff = now + timedelta(minutes=30)
+    now_iso = now.isoformat()
+
+    query = {
+        "result": None,
+        "book": "pinnacle",
+        "close_spread": None,
+        "commence_time": {"$gte": window_start.isoformat(), "$lte": cutoff.isoformat()},
+    }
+    predictions = await db.predictions.find(query, {"_id": 0}).sort("commence_time", 1).to_list(limit)
+
+    by_event: Dict[str, List[Dict[str, Any]]] = {}
+    for p in predictions:
+        event_id = p.get("event_id")
+        if event_id:
+            by_event.setdefault(event_id, []).append(p)
+
+    n_events_considered = len(by_event)
+    n_api_calls = 0
+    n_updates = 0
+    n_not_found = 0
+    samples = []
+
+    async with httpx.AsyncClient(timeout=20.0) as http_client:
+        for event_id, event_preds in by_event.items():
+            params = {
+                "apiKey": ODDS_API_KEY,
+                "regions": "eu",
+                "markets": "spreads",
+                "oddsFormat": "decimal",
+                "dateFormat": "iso",
+            }
+            try:
+                n_api_calls += 1
+                resp = await http_client.get(
+                    f"{ODDS_API_BASE}/sports/basketball_nba/events/{event_id}/odds",
+                    params=params,
+                )
+            except Exception as e:
+                n_not_found += len(event_preds)
+                if len(samples) < 5:
+                    samples.append({"event_id": event_id, "status": "request_error", "error": str(e)[:200]})
+                continue
+
+            if resp.status_code != 200:
+                n_not_found += len(event_preds)
+                if len(samples) < 5:
+                    samples.append({"event_id": event_id, "status_code": resp.status_code})
+                continue
+
+            payload = resp.json()
+            bookmakers = payload.get("bookmakers") if isinstance(payload, dict) else []
+            pinnacle = next((b for b in bookmakers if b.get("key") == "pinnacle"), None)
+            if not pinnacle:
+                n_not_found += len(event_preds)
+                if len(samples) < 5:
+                    samples.append({"event_id": event_id, "status": "no_pinnacle"})
+                continue
+
+            spreads = next((m for m in (pinnacle.get("markets") or []) if m.get("key") == "spreads"), None)
+            outcomes = (spreads or {}).get("outcomes") or []
+            if len(outcomes) < 2:
+                n_not_found += len(event_preds)
+                if len(samples) < 5:
+                    samples.append({"event_id": event_id, "status": "no_spread_outcomes"})
+                continue
+
+            for p in event_preds:
+                home_team = p.get("home_team")
+                away_team = p.get("away_team")
+                recommended_side = p.get("recommended_side", "HOME")
+                open_spread = p.get("open_spread")
+
+                home_outcome = next((o for o in outcomes if o.get("name") == home_team), outcomes[0])
+                away_outcome = next((o for o in outcomes if o.get("name") == away_team), outcomes[1] if len(outcomes) > 1 else outcomes[0])
+                close_spread = home_outcome.get("point")
+                close_price = home_outcome.get("price") if recommended_side == "HOME" else away_outcome.get("price")
+
+                clv_spread = None
+                if close_spread is not None and open_spread is not None:
+                    if recommended_side == "HOME":
+                        clv_spread = float(open_spread) - float(close_spread)
+                    else:
+                        clv_spread = float(close_spread) - float(open_spread)
+
+                update_doc = {
+                    "close_captured_at": now_iso,
+                    "close_source": "theoddsapi",
+                }
+                if close_spread is not None:
+                    update_doc["close_spread"] = close_spread
+                if close_price is not None:
+                    update_doc["close_price"] = round(float(close_price), 3)
+                if clv_spread is not None:
+                    update_doc["clv_spread"] = round(float(clv_spread), 2)
+
+                if len(update_doc) > 2:
+                    await db.predictions.update_one({"id": p["id"]}, {"$set": update_doc})
+                    n_updates += 1
+
+    return {
+        "status": "completed",
+        "window_minutes": window_minutes,
+        "n_candidates": len(predictions),
+        "n_events_considered": n_events_considered,
+        "n_api_calls": n_api_calls,
+        "n_updates_made": n_updates,
+        "n_not_found": n_not_found,
+        "samples": samples,
+    }
 
 # ============= FEATURE CALCULATION =============
 
@@ -944,10 +1107,25 @@ def calculate_rest_days(game_date: str, prev_games: List[Dict]) -> int:
 
 # ============= CREATE APP =============
 
+async def closing_capture_scheduler_loop():
+    """Simple scheduler: capture closing lines every 5 minutes."""
+    while True:
+        try:
+            await capture_closing_lines_task(window_minutes=15, limit=500)
+        except Exception as e:
+            logger.error(f"closing_capture_scheduler_loop error: {e}")
+        await asyncio.sleep(300)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting NBA Edge API v1.0 (Production)...")
+    scheduler_task = asyncio.create_task(closing_capture_scheduler_loop())
     yield
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
     client.close()
 
 app = FastAPI(title="NBA Edge API", version="1.0.0", lifespan=lifespan)
@@ -1096,15 +1274,13 @@ async def sync_odds(days: int = 2, user=Depends(get_current_user)):
                      details={"events": len(events), "lines": lines_count})
 
 @api_router.post("/admin/snapshot-close-lines", response_model=SyncStatus)
-async def snapshot_close_lines(minutes_before: int = 60, user=Depends(get_current_user)):
+async def snapshot_close_lines(minutes_before: int = 60, force: bool = False, user=Depends(get_current_user)):
     """Snapshot close lines for events starting soon"""
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(minutes=minutes_before)
     
     # Find predictions for events starting soon
-    predictions = await db.predictions.find({
-        "close_spread": None,  # Not yet snapshotted
-    }).to_list(100)
+    predictions = await db.predictions.find({}).to_list(300)
     
     updated_count = 0
     
@@ -1136,19 +1312,60 @@ async def snapshot_close_lines(minutes_before: int = 60, user=Depends(get_curren
             else:
                 clv_spread = close_spread - open_spread  # More positive close = good for AWAY
             
-            await db.predictions.update_one(
-                {"id": pred['id']},
-                {"$set": {
-                    "close_spread": close_spread,
-                    "close_price": line['price_home_decimal'] if recommended_side == 'HOME' else line['price_away_decimal'],
-                    "close_ts": datetime.now(timezone.utc).isoformat(),
-                    "clv_spread": clv_spread
-                }}
-            )
-            updated_count += 1
+            incoming_close_price = line['price_home_decimal'] if recommended_side == 'HOME' else line['price_away_decimal']
+            now_ts = datetime.now(timezone.utc).isoformat()
+
+            # Idempotent update:
+            # - never overwrite non-null values unless force=true
+            # - allow filling missing fields when new non-null values arrive
+            update_doc = {}
+            if close_spread is not None and (force or pred.get("close_spread") is None):
+                update_doc["close_spread"] = close_spread
+            if incoming_close_price is not None and (force or pred.get("close_price") is None):
+                update_doc["close_price"] = incoming_close_price
+            if clv_spread is not None and (force or pred.get("clv_spread") is None):
+                update_doc["clv_spread"] = clv_spread
+            if force or pred.get("close_source") is None:
+                update_doc["close_source"] = "pinnacle"
+            # Canonical timestamp field for writes
+            if force or pred.get("close_captured_at") is None:
+                update_doc["close_captured_at"] = now_ts
+
+            if update_doc:
+                await db.predictions.update_one(
+                    {"id": pred['id']},
+                    {"$set": update_doc}
+                )
+                updated_count += 1
     
     return SyncStatus(status="completed", message=f"Updated {updated_count} predictions with close lines",
-                     details={"updated": updated_count, "minutes_before": minutes_before})
+                     details={"updated": updated_count, "minutes_before": minutes_before, "force": force})
+
+
+@api_router.post("/admin/capture-closing-lines")
+async def capture_closing_lines(window_minutes: int = 15, limit: int = 500, user=Depends(get_current_user)):
+    """
+    Capture close lines from TheOddsAPI before event start.
+    """
+    return await capture_closing_lines_task(window_minutes=window_minutes, limit=limit)
+
+
+@api_router.get("/admin/diagnostics/closing-capture")
+async def diagnostics_closing_capture(user=Depends(get_current_user)):
+    now = datetime.now(timezone.utc).isoformat()
+    open_query = {
+        "result": None,
+        "book": "pinnacle",
+        "commence_time": {"$gte": now},
+    }
+    n_open_predictions = await db.predictions.count_documents(open_query)
+    n_close_captured = await db.predictions.count_documents({**open_query, "close_spread": {"$ne": None}})
+    pct_with_closing_line = (n_close_captured / n_open_predictions) if n_open_predictions > 0 else 0.0
+    return {
+        "n_open_predictions": n_open_predictions,
+        "n_close_captured": n_close_captured,
+        "pct_with_closing_line": pct_with_closing_line,
+    }
 
 @api_router.post("/admin/refresh-results", response_model=SyncStatus)
 async def refresh_results(user=Depends(get_current_user)):
@@ -1161,6 +1378,15 @@ DEFAULT_TRADING_SETTINGS = {
     "enabled_tiers": ["A", "B"],
     "blowout_filter_enabled": True,
     "blowout_pred_margin_threshold": 12.0,
+    "max_picks_per_day": 3,
+    "min_abs_model_edge": 1.5,
+    "clv_gate_enabled": True,
+    "dd_gate_enabled": True,
+    "dd_gate_max_drawdown_threshold": 0.25,
+    "use_outcome_calibration": True,
+    "tier_a_min_p_cover_real": 0.54,
+    "tier_b_min_p_cover_real": 0.52,
+    "tier_c_min_p_cover_real": 0.50,
     "stake_mode": "FLAT",
     "flat_stake_pct": 0.01,
     "kelly_fraction": 0.20,
@@ -1201,6 +1427,23 @@ async def update_trading_settings(update: TradingSettingsUpdate, user=Depends(ge
     # Return without _id
     del current["_id"]
     return current
+
+@api_router.post("/admin/predictions/import")
+async def import_predictions(payload: ImportPredictionsRequest, user=Depends(get_current_user)):
+    """Import predictions from NDJSON with idempotent upsert rules."""
+    from backend.migrate_predictions import import_predictions_from_ndjson
+
+    try:
+        result = await import_predictions_from_ndjson(
+            db=db,
+            path=payload.path,
+            dry_run=payload.dry_run,
+        )
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 @api_router.post("/picks/{pick_id}/result")
 async def register_pick_result(pick_id: str, result_input: PickResultInput, user=Depends(get_current_user)):
@@ -1441,15 +1684,19 @@ async def auto_grade_results(days_back: int = 3, user=Depends(get_current_user))
                 "result": result,
                 "profit": round(profit_units, 2)
             })
-    
+
+    # Auto-trigger close snapshot backfill for recent games
+    snapshot_info = await backfill_close_snapshot(db=db, days=max(days_back, 2), force=False)
+
     return {
         "status": "completed",
         "games_from_api": len(completed_games),
-        "results": results
+        "results": results,
+        "close_snapshot_backfill": snapshot_info
     }
 
 @api_router.post("/admin/snapshot-close")
-async def snapshot_close_v2(window_minutes: int = 60, user=Depends(get_current_user)):
+async def snapshot_close_v2(window_minutes: int = 60, force: bool = False, user=Depends(get_current_user)):
     """
     Snapshot close lines for picks (Paper Trading v4.0).
     
@@ -1461,14 +1708,15 @@ async def snapshot_close_v2(window_minutes: int = 60, user=Depends(get_current_u
     now_str = now.isoformat()
     cutoff_str = cutoff.isoformat()
     
-    # Find picks without close_spread for events starting soon
+    # Find picks in the target time window.
+    # We keep selection broad and enforce idempotency at field update level.
     picks = await db.predictions.find({
-        "close_spread": None,
         "commence_time": {"$lte": cutoff_str, "$gte": now_str}
-    }, {"_id": 0}).to_list(100)
+    }, {"_id": 0}).to_list(300)
     
     results = {
         "updated": 0,
+        "skipped": 0,
         "on_time": 0,
         "late": 0,
         "missing": 0,
@@ -1517,22 +1765,38 @@ async def snapshot_close_v2(window_minutes: int = 60, user=Depends(get_current_u
         # CLV price (optional)
         open_price = pick.get('open_price', 1.91)
         clv_price = close_price - open_price
-        
-        update_doc = {
-            "close_spread": close_spread,
-            "close_price": round(close_price, 3),
-            "close_captured_at": now_str,
-            "close_quality": quality,
-            "clv_spread": round(clv_spread, 2),
-            "clv_price": round(clv_price, 3)
-        }
-        
-        await db.predictions.update_one(
-            {"id": pick['id']},
-            {"$set": update_doc}
-        )
-        
-        results["updated"] += 1
+
+        # Read-time fallback for legacy field (compat only).
+        # Writes are canonical to close_captured_at.
+        existing_captured_at = pick.get("close_captured_at") or pick.get("close_ts")
+
+        # Idempotent update:
+        # - never overwrite non-null with null
+        # - fill missing fields when new non-null values arrive
+        update_doc = {}
+        if close_spread is not None and (force or pick.get("close_spread") is None):
+            update_doc["close_spread"] = close_spread
+        if close_price is not None and (force or pick.get("close_price") is None):
+            update_doc["close_price"] = round(close_price, 3)
+        if clv_spread is not None and (force or pick.get("clv_spread") is None):
+            update_doc["clv_spread"] = round(clv_spread, 2)
+        if clv_price is not None and (force or pick.get("clv_price") is None):
+            update_doc["clv_price"] = round(clv_price, 3)
+        if force or pick.get("close_quality") is None:
+            update_doc["close_quality"] = quality
+        if force or pick.get("close_source") is None:
+            update_doc["close_source"] = "pinnacle"
+        if force or existing_captured_at is None:
+            update_doc["close_captured_at"] = now_str
+
+        if update_doc:
+            await db.predictions.update_one(
+                {"id": pick['id']},
+                {"$set": update_doc}
+            )
+            results["updated"] += 1
+        else:
+            results["skipped"] += 1
         
         if len(results["samples"]) < 5:
             results["samples"].append({
@@ -1547,8 +1811,30 @@ async def snapshot_close_v2(window_minutes: int = 60, user=Depends(get_current_u
     return {
         "status": "completed",
         "window_minutes": window_minutes,
+        "force": force,
         "results": results
     }
+
+@api_router.post("/admin/close-snapshot/backfill")
+async def close_snapshot_backfill(
+    days: int = 7,
+    force: bool = False,
+    debug: bool = False,
+    debug_query: bool = False,
+    fallback_time_field: str = "open_ts",
+    user=Depends(get_current_user),
+):
+    """Backfill close lines for last N days with idempotent update semantics."""
+    return await backfill_close_snapshot(
+        db=db,
+        days=days,
+        force=force,
+        debug=debug,
+        debug_query=debug_query,
+        fallback_time_field=fallback_time_field,
+        odds_api_key=ODDS_API_KEY,
+        odds_api_base=ODDS_API_BASE,
+    )
 
 @api_router.get("/admin/report/bankroll-sim")
 async def bankroll_simulation(
@@ -2451,6 +2737,41 @@ async def calibrate_vs_market(min_games: int = 100, user=Depends(get_current_use
     }
 
 
+@api_router.post("/admin/model/calibrate-outcome")
+async def calibrate_outcome(payload: OutcomeCalibrationRequest, user=Depends(get_current_user)):
+    """
+    Fit binary outcome calibration on settled picks.
+    Model is independent from Ridge and only maps model_edge/open line to p_cover_real.
+    """
+    return await fit_outcome_calibration(
+        db=db,
+        include_push_as_half=payload.include_push_as_half,
+        min_samples=payload.min_samples,
+    )
+
+
+@api_router.get("/admin/model/calibration-outcome/current")
+async def get_current_outcome_calibration(user=Depends(get_current_user)):
+    doc = await get_active_outcome_calibration(db)
+    if not doc:
+        return {
+            "error": "NO_ACTIVE_OUTCOME_CALIBRATION",
+            "message": "Run POST /api/admin/model/calibrate-outcome first."
+        }
+    return {
+        "n_samples": doc.get("n_samples"),
+        "feature_names": doc.get("feature_names") or doc.get("features"),
+        "coefficients": doc.get("coefficients"),
+        "intercept": doc.get("intercept"),
+        "data_cutoff": doc.get("data_cutoff"),
+    }
+
+
+@api_router.get("/admin/model/calibration-outcome/diagnostics")
+async def get_outcome_calibration_diagnostics_route(bins: int = 5, user=Depends(get_current_user)):
+    return await get_outcome_calibration_diagnostics(db=db, bins=bins)
+
+
 @api_router.get("/admin/calibration/current")
 async def get_current_calibration(user=Depends(get_current_user)):
     """
@@ -3038,7 +3359,11 @@ async def generate_picks(user=Depends(get_current_user)):
     - All picks classified by tier (A, B, C) based on EV
     - Full traceability: every pick contains calibration_id and all parameters
     - Anti-blowout filter for favorites with high pred_margin
-    - No max_picks_per_day limit (max volume for paper trading)
+    - Conservative guardrails:
+      * max_picks_per_day by day(Europe/Madrid) and market
+      * min_abs_model_edge always active
+      * CLV gate only when n_settled_50 >= 50 and clv_median_50 is available
+      * DD gate only when n_picks_settled >= 100
     """
     import numpy as np
     
@@ -3077,6 +3402,15 @@ async def generate_picks(user=Depends(get_current_user)):
     blowout_filter_enabled = trading_settings.get('blowout_filter_enabled', True)
     blowout_threshold = trading_settings.get('blowout_pred_margin_threshold', 12.0)
     enabled_tiers = trading_settings.get('enabled_tiers', ['A', 'B'])
+    max_picks_per_day = int(trading_settings.get('max_picks_per_day', 3))
+    min_abs_model_edge = float(trading_settings.get('min_abs_model_edge', 1.5))
+    clv_gate_enabled = bool(trading_settings.get('clv_gate_enabled', True))
+    dd_gate_enabled = bool(trading_settings.get('dd_gate_enabled', True))
+    dd_gate_max_drawdown_threshold = float(trading_settings.get('dd_gate_max_drawdown_threshold', 0.25))
+    use_outcome_calibration = bool(trading_settings.get('use_outcome_calibration', True))
+    tier_a_min_p_cover_real = float(trading_settings.get('tier_a_min_p_cover_real', 0.54))
+    tier_b_min_p_cover_real = float(trading_settings.get('tier_b_min_p_cover_real', 0.52))
+    tier_c_min_p_cover_real = float(trading_settings.get('tier_c_min_p_cover_real', 0.50))
     
     # Extract ALL calibration parameters - no defaults allowed
     calibration_id = calibration.get('calibration_id')
@@ -3108,8 +3442,64 @@ async def generate_picks(user=Depends(get_current_user)):
             status_code=400,
             detail="LEGACY_SIGMA_DETECTED: sigma_residual=12.0 is forbidden. Re-run /api/admin/model/calibrate-vs-market."
         )
+
+    # Load latest persistent performance snapshot (if available)
+    perf = await db.performance_daily.find_one({}, {"_id": 0}, sort=[("as_of_date", -1)])
+    clv_gate_active = False
+    dd_gate_active = False
+    clv_median_50 = None
+    n_settled_50 = None
+    n_picks_settled = None
+    max_drawdown_total = None
+
+    if perf:
+        clv_median_50 = perf.get("clv_median_50")
+        n_settled_50 = perf.get("n_settled_50")
+        n_picks_settled = perf.get("n_picks_settled")
+        max_drawdown_total = perf.get("max_drawdown_total")
+
+        # CLV gate only if n_settled_50 >= 50 and CLV metric exists (non-null)
+        if (
+            clv_gate_enabled
+            and n_settled_50 is not None
+            and n_settled_50 >= 50
+            and clv_median_50 is not None
+            and clv_median_50 < 0
+        ):
+            clv_gate_active = True
+
+        # DD gate only if n_picks_settled >= 100
+        if (
+            dd_gate_enabled
+            and n_picks_settled is not None
+            and n_picks_settled >= 100
+            and max_drawdown_total is not None
+            and max_drawdown_total > dd_gate_max_drawdown_threshold
+        ):
+            dd_gate_active = True
+
+    effective_stake_mode = trading_settings.get('stake_mode', 'FLAT')
+    if dd_gate_active and effective_stake_mode == "KELLY":
+        effective_stake_mode = "FLAT"
+
+    outcome_calibration = await get_active_outcome_calibration(db) if use_outcome_calibration else None
+    using_outcome_calibration = outcome_calibration is not None
+    warnings = []
+    if use_outcome_calibration and not using_outcome_calibration:
+        warnings.append("NO_ACTIVE_OUTCOME_CALIBRATION: using legacy tiering by EV")
     
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)  # Increased limit
+
+    # Existing picks count by Madrid day + market (book) for hard cap
+    existing_picks = await db.predictions.find({"user_id": user['id']}, {"_id": 0, "commence_time": 1, "book": 1}).to_list(2000)
+    day_market_count = {}
+    for p in existing_picks:
+        d_key = madrid_day_key(p.get("commence_time", ""))
+        market_key = p.get("book")
+        if not d_key or not market_key:
+            continue
+        key = (d_key, market_key)
+        day_market_count[key] = day_market_count.get(key, 0) + 1
     
     picks = []
     tier_a_picks = []  # EV >= 5%
@@ -3127,6 +3517,13 @@ async def generate_picks(user=Depends(get_current_user)):
         
         if not has_pinnacle:
             continue  # Skip non-Pinnacle for paper trading
+
+        market_key = ref_line['bookmaker_key']
+        event_day_madrid = madrid_day_key(event['commence_time'])
+        if event_day_madrid:
+            key = (event_day_madrid, market_key)
+            if day_market_count.get(key, 0) >= max_picks_per_day:
+                continue
         
         matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
         if not matchup_data:
@@ -3150,6 +3547,10 @@ async def generate_picks(user=Depends(get_current_user)):
         
         # model_edge = pred_margin - cover_threshold (raw edge vs market)
         model_edge = pred_margin - cover_threshold
+
+        # Always-on guardrail: minimum absolute model edge
+        if abs(model_edge) < min_abs_model_edge:
+            continue
         
         home_covers = pred_margin > cover_threshold
         away_covers = pred_margin < cover_threshold
@@ -3171,6 +3572,14 @@ async def generate_picks(user=Depends(get_current_user)):
         p_cover, z = calculate_p_cover_vs_market(model_edge, alpha, beta, sigma_residual, recommended_side)
         implied_prob = 1.0 / open_price if open_price > 1.0 else 0.5
         ev = calculate_ev(p_cover, open_price)
+        p_cover_real = None
+        if using_outcome_calibration:
+            p_cover_real = predict_p_cover_outcome(
+                model_edge=model_edge,
+                open_price=open_price,
+                open_spread=market_spread,
+                calibration_doc=outcome_calibration,
+            )
         
         # Adjusted edge after shrinkage
         adjusted_edge = beta * model_edge + alpha
@@ -3190,18 +3599,31 @@ async def generate_picks(user=Depends(get_current_user)):
             abs(pred_margin) > blowout_threshold
         )
         
-        # TIER CLASSIFICATION (Paper Trading)
-        # Tier A (Core): EV >= 5%
-        # Tier B (Exploration): 2% <= EV < 5%
-        # Tier C (Control): -1% <= EV <= +1%
-        if ev >= 0.05:
-            tier = "A"
-        elif ev >= 0.02:
-            tier = "B"
-        elif -0.01 <= ev <= 0.01:
-            tier = "C"
+        # Tier classification
+        # Conservative mode: use calibrated p_cover_real when available.
+        # Fallback mode: legacy EV tiers.
+        if p_cover_real is not None:
+            if p_cover_real >= tier_a_min_p_cover_real:
+                tier = "A"
+            elif p_cover_real >= tier_b_min_p_cover_real:
+                tier = "B"
+            elif p_cover_real >= tier_c_min_p_cover_real:
+                tier = "C"
+            else:
+                tier = None
         else:
-            tier = None  # Not in any tier
+            if ev >= 0.05:
+                tier = "A"
+            elif ev >= 0.02:
+                tier = "B"
+            elif -0.01 <= ev <= 0.01:
+                tier = "C"
+            else:
+                tier = None
+
+        # CLV gate (degrade to Tier C only) only when minimum data threshold is met
+        if clv_gate_active and tier in ("A", "B"):
+            tier = "C"
         
         # Signal based on EV (new system)
         signal_ev = calculate_signal_ev(ev)
@@ -3263,6 +3685,7 @@ async def generate_picks(user=Depends(get_current_user)):
             # Probability and EV columns
             "implied_prob": round(implied_prob, 4),
             "p_cover": round(p_cover, 4),
+            "p_cover_real": round(float(p_cover_real), 4) if p_cover_real is not None else None,
             "ev": round(ev, 4),
             # Tier classification (Paper Trading v3.0)
             "tier": tier,
@@ -3299,6 +3722,10 @@ async def generate_picks(user=Depends(get_current_user)):
         )
         
         picks.append(pick)
+
+        if event_day_madrid:
+            key = (event_day_madrid, market_key)
+            day_market_count[key] = day_market_count.get(key, 0) + 1
         
         # Paper Trading v4.0: Track blowout filtered picks
         if blowout_filter_hit:
@@ -3347,13 +3774,41 @@ async def generate_picks(user=Depends(get_current_user)):
         "trading_settings": {
             "enabled_tiers": enabled_tiers,
             "blowout_filter_enabled": blowout_filter_enabled,
-            "blowout_threshold": blowout_threshold
+            "blowout_threshold": blowout_threshold,
+            "max_picks_per_day": max_picks_per_day,
+            "min_abs_model_edge": min_abs_model_edge,
+            "stake_mode": effective_stake_mode,
+            "use_outcome_calibration": use_outcome_calibration,
+            "tier_a_min_p_cover_real": tier_a_min_p_cover_real,
+            "tier_b_min_p_cover_real": tier_b_min_p_cover_real,
+            "tier_c_min_p_cover_real": tier_c_min_p_cover_real
         },
-        "tier_thresholds": {
-            "A": "EV >= 5%",
-            "B": "2% <= EV < 5%",
-            "C": "-1% <= EV <= +1%"
+        "tiering_mode": "P_COVER_REAL" if using_outcome_calibration else "EV_FALLBACK",
+        "warnings": warnings,
+        "guardrails": {
+            "clv_gate_enabled": clv_gate_enabled,
+            "clv_gate_active": clv_gate_active,
+            "n_settled_50": n_settled_50,
+            "clv_median_50": clv_median_50,
+            "dd_gate_enabled": dd_gate_enabled,
+            "dd_gate_active": dd_gate_active,
+            "n_picks_settled": n_picks_settled,
+            "max_drawdown_total": max_drawdown_total,
+            "dd_gate_max_drawdown_threshold": dd_gate_max_drawdown_threshold
         },
+        "tier_thresholds": (
+            {
+                "A": f"p_cover_real >= {tier_a_min_p_cover_real:.2f}",
+                "B": f"{tier_b_min_p_cover_real:.2f} <= p_cover_real < {tier_a_min_p_cover_real:.2f}",
+                "C": f"{tier_c_min_p_cover_real:.2f} <= p_cover_real < {tier_b_min_p_cover_real:.2f}",
+            }
+            if using_outcome_calibration
+            else {
+                "A": "EV >= 5%",
+                "B": "2% <= EV < 5%",
+                "C": "-1% <= EV <= +1%",
+            }
+        ),
         "summary": {
             "total_analyzed": len(events),
             "total_valid_picks": len(picks),
@@ -3770,6 +4225,231 @@ async def get_model_stats(user=Depends(get_current_user)):
 async def get_config(user=Depends(get_current_user)):
     """Get current operational config"""
     return {"config": OPERATIONAL_CONFIG}
+
+
+@api_router.post("/admin/performance/recompute")
+async def recompute_performance(user=Depends(get_current_user)):
+    snapshot = await recompute_performance_daily(db)
+    return {"status": "completed", "snapshot": snapshot}
+
+
+@api_router.get("/admin/performance-summary")
+async def performance_summary(days: int = 90, user=Depends(get_current_user)):
+    return await get_performance_summary(db, days=days)
+
+
+@api_router.get("/admin/diagnostics/clv-coverage")
+async def diagnostics_clv_coverage(last_n: int = 200, user=Depends(get_current_user)):
+    last_n = max(1, min(int(last_n), 5000))
+    picks = await db.predictions.find(
+        {},
+        {
+            "_id": 0,
+            "id": 1,
+            "event_id": 1,
+            "open_spread": 1,
+            "close_spread": 1,
+            "clv_spread": 1,
+            "open_ts": 1,
+            "close_captured_at": 1,
+            "close_ts": 1,
+            "book": 1,
+            "created_at": 1,
+        },
+    ).sort("created_at", -1).to_list(last_n)
+
+    n_checked = len(picks)
+    n_with_close_spread = sum(1 for p in picks if p.get("close_spread") is not None)
+    n_with_clv_spread = sum(1 for p in picks if p.get("clv_spread") is not None)
+    pct_with_clv = (n_with_clv_spread / n_checked) if n_checked > 0 else 0.0
+
+    missing_closing_line = []
+    clv_not_computed_bug = []
+    for p in picks:
+        close_spread = p.get("close_spread")
+        clv_spread = p.get("clv_spread")
+        if close_spread is None:
+            missing_closing_line.append(p)
+        elif clv_spread is None:
+            clv_not_computed_bug.append(p)
+
+    examples = []
+    for p in picks:
+        issue = None
+        if p.get("close_spread") is None:
+            issue = "missing_closing_line"
+        elif p.get("clv_spread") is None:
+            issue = "clv_not_computed_bug"
+        examples.append(
+            {
+                "id": p.get("id"),
+                "event_id": p.get("event_id"),
+                "open_spread": p.get("open_spread"),
+                "close_spread": p.get("close_spread"),
+                "clv_spread": p.get("clv_spread"),
+                "open_ts": p.get("open_ts"),
+                "close_captured_at": p.get("close_captured_at") or p.get("close_ts"),
+                "book": p.get("book"),
+                "issue": issue,
+            }
+        )
+        if len(examples) >= 10:
+            break
+
+    return {
+        "n_checked": n_checked,
+        "n_with_close_spread": n_with_close_spread,
+        "n_with_clv_spread": n_with_clv_spread,
+        "pct_with_clv": pct_with_clv,
+        "n_clv_not_computed_bug": len(clv_not_computed_bug),
+        "n_missing_closing_line": len(missing_closing_line),
+        "clv_not_computed_bug": {
+            "count": len(clv_not_computed_bug),
+            "sample_ids": [p.get("id") for p in clv_not_computed_bug[:10]],
+        },
+        "missing_closing_line": {
+            "count": len(missing_closing_line),
+            "sample_ids": [p.get("id") for p in missing_closing_line[:10]],
+        },
+        "ejemplos": examples,
+    }
+
+
+@api_router.get("/admin/report/selection-sweep")
+async def selection_sweep_report(include_push_as_zero: bool = False, user=Depends(get_current_user)):
+    result = await run_selection_sweep(
+        db=db,
+        out_path="backend/data/selection_sweep.json",
+        include_push_as_zero=include_push_as_zero,
+    )
+    return {
+        "status": result.get("status"),
+        "generated_at": result.get("generated_at"),
+        "dataset": result.get("dataset"),
+        "n_configs_total": result.get("n_configs_total"),
+        "n_configs_eligible_min_30": result.get("n_configs_eligible_min_30"),
+        "baseline": result.get("baseline"),
+        "top_20": result.get("top_20"),
+    }
+
+
+@api_router.get("/admin/report/walkforward-selection")
+async def walkforward_selection_report(
+    step_days: int = 7,
+    train_min_samples: int = 50,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    return await run_walkforward_selection(
+        db=db,
+        out_path="backend/data/walkforward_selection.json",
+        train_min_samples=train_min_samples,
+        step_days=step_days,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+@api_router.post("/admin/run-full-calibration")
+async def run_full_calibration(user=Depends(get_current_user)):
+    """
+    Run full conservative calibration flow without touching Ridge/VS_MARKET:
+    1) Outcome calibration (LogisticRegression)
+    2) Performance recompute snapshot
+    """
+    calibration_result = await fit_outcome_calibration(
+        db=db,
+        include_push_as_half=False,
+        min_samples=50,
+    )
+    active_outcome = await get_active_outcome_calibration(db)
+    performance_latest = await recompute_performance_daily(db)
+
+    return {
+        "calibration": {
+            "n_samples": (active_outcome or {}).get("n_samples", calibration_result.get("n_samples")),
+            "coefficients": (active_outcome or {}).get("coefficients", calibration_result.get("coefficients")),
+            "intercept": (active_outcome or {}).get("intercept", calibration_result.get("intercept")),
+            "data_cutoff": (active_outcome or {}).get("data_cutoff"),
+        },
+        "performance_latest": {
+            "avg_p_cover_real_50": performance_latest.get("avg_p_cover_real_50"),
+            "winrate_50": performance_latest.get("winrate_50"),
+            "brier_score_50": performance_latest.get("brier_score_50"),
+            "roi_total": performance_latest.get("roi_total"),
+            "n_picks_total": performance_latest.get("n_picks_total"),
+        },
+    }
+
+
+@api_router.post("/admin/run-daily-paper")
+async def run_daily_paper(user=Depends(get_current_user)):
+    """
+    Daily paper trading runner (no model changes):
+    1) generate picks
+    2) auto-grade recent picks
+    3) backfill close snapshot (2 days)
+    4) recompute performance snapshot
+    5) evaluate conservative gates from latest performance
+    """
+    generate_res = await generate_picks(user=user)
+    auto_grade_res = await auto_grade_results(days_back=3, user=user)
+    close_backfill_res = await backfill_close_snapshot(db=db, days=2, force=False)
+    performance_latest = await recompute_performance_daily(db)
+
+    # Count picks generated "today" in Europe/Madrid.
+    today_madrid = datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Madrid")).date()
+    picks_today = 0
+    for p in generate_res.get("all_picks", []):
+        created_at = p.get("created_at")
+        if not created_at:
+            continue
+        try:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.astimezone(ZoneInfo("Europe/Madrid")).date() == today_madrid:
+            picks_today += 1
+
+    n_settled_50 = performance_latest.get("n_settled_50")
+    clv_median_50 = performance_latest.get("clv_median_50")
+    roi_50 = performance_latest.get("roi_50")
+
+    warnings = []
+    if n_settled_50 is not None and n_settled_50 >= 50:
+        if clv_median_50 is not None and clv_median_50 < 0:
+            warnings.append("STOP_STRATEGY")
+        if (
+            roi_50 is not None
+            and roi_50 < -0.08
+            and clv_median_50 is not None
+            and clv_median_50 <= 0
+        ):
+            warnings.append("TIGHTEN_THRESHOLD")
+
+    gates_status = {
+        "n_settled_50": n_settled_50,
+        "clv_median_50": clv_median_50,
+        "roi_50": roi_50,
+        "warnings": warnings,
+    }
+
+    return {
+        "status": "completed",
+        "picks_creados_hoy": picks_today,
+        "performance_latest": performance_latest,
+        "gates_status": gates_status,
+        "steps": {
+            "generate": {
+                "status": generate_res.get("status"),
+                "total_valid_picks": generate_res.get("summary", {}).get("total_valid_picks"),
+            },
+            "auto_grade": auto_grade_res.get("status"),
+            "close_snapshot_backfill": close_backfill_res.get("status"),
+            "performance_recompute": "completed",
+        },
+    }
 
 # ============= ROOT =============
 
