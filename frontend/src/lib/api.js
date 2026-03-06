@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: `${API_URL}/api`,
@@ -46,6 +46,10 @@ export const adminApi = {
   syncUpcoming: (days = 2) => api.post(`/admin/sync-upcoming?days=${days}`),
   syncOdds: (days = 2) => api.post(`/admin/sync-odds?days=${days}`),
   refreshResults: () => api.post('/admin/refresh-results'),
+  captureClosingLines: (windowMinutes = 30) => api.post(`/admin/capture-closing-lines?window_minutes=${windowMinutes}`),
+  runDailyPaper: () => api.post('/admin/run-daily-paper'),
+  getClosingCaptureDiagnostics: () => api.get('/admin/diagnostics/closing-capture'),
+  getPerformanceSummary: (days = 90) => api.get(`/admin/performance-summary?days=${days}`),
 };
 
 // User

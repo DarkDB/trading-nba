@@ -10,12 +10,14 @@ import {
   Settings,
   LogOut,
   TrendingUp,
-  Zap
+  Zap,
+  Settings2
 } from 'lucide-react';
 import { Button } from '../ui/button';
 
 const navItems = [
   { path: '/dashboard', icon: TrendingUp, label: 'Dashboard' },
+  { path: '/ops-dashboard', icon: Settings2, label: 'Ops Dashboard', highlight: true },
   { path: '/live-ops', icon: Zap, label: 'Live Ops', highlight: true },
   { path: '/dataset', icon: Database, label: 'Dataset' },
   { path: '/train', icon: Brain, label: 'Train' },

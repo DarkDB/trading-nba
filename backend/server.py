@@ -560,7 +560,7 @@ def generate_recommended_bet_string(home_team: str, away_team: str, home_abbr: s
     return f"{team} {spread_str}"
 
 
-async def capture_closing_lines_task(window_minutes: int = 15, limit: int = 500) -> Dict[str, Any]:
+async def capture_closing_lines_task(window_minutes: int = 30, limit: int = 500) -> Dict[str, Any]:
     """
     Capture closing lines before event start (TheOddsAPI event odds endpoint expires after games).
     """
@@ -1111,7 +1111,7 @@ async def closing_capture_scheduler_loop():
     """Simple scheduler: capture closing lines every 5 minutes."""
     while True:
         try:
-            await capture_closing_lines_task(window_minutes=15, limit=500)
+            await capture_closing_lines_task(window_minutes=30, limit=500)
         except Exception as e:
             logger.error(f"closing_capture_scheduler_loop error: {e}")
         await asyncio.sleep(300)
@@ -1343,7 +1343,7 @@ async def snapshot_close_lines(minutes_before: int = 60, force: bool = False, us
 
 
 @api_router.post("/admin/capture-closing-lines")
-async def capture_closing_lines(window_minutes: int = 15, limit: int = 500, user=Depends(get_current_user)):
+async def capture_closing_lines(window_minutes: int = 30, limit: int = 500, user=Depends(get_current_user)):
     """
     Capture close lines from TheOddsAPI before event start.
     """

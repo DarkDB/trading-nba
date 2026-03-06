@@ -16,6 +16,7 @@ import Picks from "./pages/Picks";
 import History from "./pages/History";
 import Settings from "./pages/Settings";
 import LiveOps from "./pages/LiveOps";
+import OpsDashboard from "./pages/OpsDashboard";
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
           <Route element={<DashboardLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/live-ops" element={<LiveOps />} />
+            <Route path="/ops-dashboard" element={<OpsDashboard />} />
             <Route path="/dataset" element={<Dataset />} />
             <Route path="/train" element={<Train />} />
             <Route path="/upcoming" element={<Upcoming />} />
