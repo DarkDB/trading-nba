@@ -44,6 +44,7 @@ JWT_EXPIRATION_HOURS = int(os.environ.get('JWT_EXPIRATION_HOURS', 24))
 # Odds API Config
 ODDS_API_KEY = os.environ.get('ODDS_API_KEY', '')
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+OPERATIONAL_USER_EMAIL = os.environ.get("OPERATIONAL_USER_EMAIL", "").strip().lower()
 
 # ============= OPERATIONAL CONFIG (V1.0) =============
 OPERATIONAL_CONFIG = {
@@ -103,6 +104,19 @@ def get_team_abbr(full_name: str) -> Optional[str]:
 
 def get_team_full_name(abbr: str) -> Optional[str]:
     return ABBR_TO_TEAM_NAME.get(abbr)
+
+
+def is_operational_user(user: Dict[str, Any]) -> bool:
+    user_id = str(user.get("id", "")).strip().lower()
+    email = str(user.get("email", "")).strip().lower()
+    name = str(user.get("name", "")).strip().lower()
+    if user_id == "admin":
+        return False
+    if email.startswith("probe_") or name.startswith("probe"):
+        return False
+    if OPERATIONAL_USER_EMAIL and email != OPERATIONAL_USER_EMAIL:
+        return False
+    return True
 
 # ============= PYDANTIC MODELS =============
 
@@ -566,7 +580,7 @@ async def capture_closing_lines_task(window_minutes: int = 30, limit: int = 500)
     """
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(minutes=5)
-    cutoff = now + timedelta(minutes=30)
+    cutoff = now + timedelta(minutes=window_minutes)
     now_iso = now.isoformat()
 
     query = {
@@ -3366,6 +3380,12 @@ async def generate_picks(user=Depends(get_current_user)):
       * DD gate only when n_picks_settled >= 100
     """
     import numpy as np
+
+    if not is_operational_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail="USER_NOT_ALLOWED_FOR_OPERATIONAL_GENERATION: use the operational account only.",
+        )
     
     model_data = await get_active_model()
     if not model_data:
@@ -3444,7 +3464,7 @@ async def generate_picks(user=Depends(get_current_user)):
         )
 
     # Load latest persistent performance snapshot (if available)
-    perf = await db.performance_daily.find_one({}, {"_id": 0}, sort=[("as_of_date", -1)])
+    perf = await db.performance_daily.find_one({"user_id": user["id"]}, {"_id": 0}, sort=[("as_of_date", -1)])
     clv_gate_active = False
     dd_gate_active = False
     clv_median_50 = None
@@ -3491,7 +3511,10 @@ async def generate_picks(user=Depends(get_current_user)):
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)  # Increased limit
 
     # Existing picks count by Madrid day + market (book) for hard cap
-    existing_picks = await db.predictions.find({"user_id": user['id']}, {"_id": 0, "commence_time": 1, "book": 1}).to_list(2000)
+    existing_picks = await db.predictions.find(
+        {"user_id": user['id'], "archived": {"$ne": True}},
+        {"_id": 0, "commence_time": 1, "book": 1},
+    ).to_list(2000)
     day_market_count = {}
     for p in existing_picks:
         d_key = madrid_day_key(p.get("commence_time", ""))
@@ -3507,6 +3530,7 @@ async def generate_picks(user=Depends(get_current_user)):
     tier_c_picks = []  # -1% <= EV <= 1% (control)
     blowout_filtered_picks = []  # Picks excluded by blowout filter
     blowout_filtered_count = 0
+    global_duplicate_skipped_count = 0
     
     for event in events:
         lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
@@ -3716,6 +3740,23 @@ async def generate_picks(user=Depends(get_current_user)):
             "settled_at": None
         }
         
+        # Cross-user dedupe guardrail for pending picks:
+        # prevent duplicate operational picks with same event/book/side/spread.
+        existing_pending_same_pick = await db.predictions.find_one(
+            {
+                "event_id": event["event_id"],
+                "book": ref_line["bookmaker_key"],
+                "recommended_side": recommended_side,
+                "open_spread": market_spread,
+                "result": None,
+                "archived": {"$ne": True},
+            },
+            {"_id": 0, "user_id": 1, "id": 1},
+        )
+        if existing_pending_same_pick and existing_pending_same_pick.get("user_id") != user["id"]:
+            global_duplicate_skipped_count += 1
+            continue
+
         await db.predictions.update_one(
             {"user_id": user['id'], "event_id": event['event_id']},
             {"$set": pick}, upsert=True
@@ -3748,6 +3789,8 @@ async def generate_picks(user=Depends(get_current_user)):
     
     # Log stats
     logger.info(f"Generated {len(picks)} picks. Tier A: {len(tier_a_picks)}, Tier B: {len(tier_b_picks)}, Tier C: {len(tier_c_picks)}, Blowout filtered: {blowout_filtered_count}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
+    if global_duplicate_skipped_count > 0:
+        warnings.append(f"GLOBAL_DUPLICATE_SKIPPED: {global_duplicate_skipped_count}")
     
     # PAPER TRADING v4.0 Response - All picks with tier classification and blowout info
     return {
@@ -3815,7 +3858,8 @@ async def generate_picks(user=Depends(get_current_user)):
             "tier_a_count": len(tier_a_picks),
             "tier_b_count": len(tier_b_picks),
             "tier_c_count": len(tier_c_picks),
-            "blowout_filtered_count": blowout_filtered_count
+            "blowout_filtered_count": blowout_filtered_count,
+            "global_duplicate_skipped_count": global_duplicate_skipped_count,
         },
         "tiers": {
             "A": tier_a_picks,
@@ -3829,7 +3873,7 @@ async def generate_picks(user=Depends(get_current_user)):
 
 @api_router.get("/picks")
 async def get_picks(user=Depends(get_current_user)):
-    picks = await db.predictions.find({"user_id": user['id']}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    picks = await db.predictions.find({"user_id": user['id'], "archived": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(100)
     return {"picks": picks}
 
 @api_router.get("/picks/operative")
@@ -3837,7 +3881,8 @@ async def get_operative_picks(user=Depends(get_current_user)):
     """Get only operative picks (ready to bet)"""
     picks = await db.predictions.find({
         "user_id": user['id'],
-        "do_not_bet": False
+        "do_not_bet": False,
+        "archived": {"$ne": True},
     }, {"_id": 0}).sort("commence_time", 1).to_list(50)
     return {"picks": picks, "count": len(picks)}
 
@@ -4229,20 +4274,20 @@ async def get_config(user=Depends(get_current_user)):
 
 @api_router.post("/admin/performance/recompute")
 async def recompute_performance(user=Depends(get_current_user)):
-    snapshot = await recompute_performance_daily(db)
+    snapshot = await recompute_performance_daily(db, user_id=user["id"])
     return {"status": "completed", "snapshot": snapshot}
 
 
 @api_router.get("/admin/performance-summary")
 async def performance_summary(days: int = 90, user=Depends(get_current_user)):
-    return await get_performance_summary(db, days=days)
+    return await get_performance_summary(db, days=days, user_id=user["id"])
 
 
 @api_router.get("/admin/diagnostics/clv-coverage")
 async def diagnostics_clv_coverage(last_n: int = 200, user=Depends(get_current_user)):
     last_n = max(1, min(int(last_n), 5000))
     picks = await db.predictions.find(
-        {},
+        {"user_id": user["id"], "archived": {"$ne": True}},
         {
             "_id": 0,
             "id": 1,
@@ -4364,7 +4409,7 @@ async def run_full_calibration(user=Depends(get_current_user)):
         min_samples=50,
     )
     active_outcome = await get_active_outcome_calibration(db)
-    performance_latest = await recompute_performance_daily(db)
+    performance_latest = await recompute_performance_daily(db, user_id=user["id"])
 
     return {
         "calibration": {
@@ -4396,7 +4441,7 @@ async def run_daily_paper(user=Depends(get_current_user)):
     generate_res = await generate_picks(user=user)
     auto_grade_res = await auto_grade_results(days_back=3, user=user)
     close_backfill_res = await backfill_close_snapshot(db=db, days=2, force=False)
-    performance_latest = await recompute_performance_daily(db)
+    performance_latest = await recompute_performance_daily(db, user_id=user["id"])
 
     # Count picks generated "today" in Europe/Madrid.
     today_madrid = datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Madrid")).date()

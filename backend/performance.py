@@ -45,11 +45,16 @@ def _compute_drawdown(equity: List[float]) -> float:
     return max_dd
 
 
-async def recompute_performance_daily(db) -> Dict[str, Any]:
+async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     as_of_date = now.strftime("%Y-%m-%d")
 
-    picks = await db.predictions.find({}, {"_id": 0}).sort("created_at", 1).to_list(100000)
+    query: Dict[str, Any] = {}
+    query["archived"] = {"$ne": True}
+    if user_id:
+        query["user_id"] = user_id
+
+    picks = await db.predictions.find(query, {"_id": 0}).sort("created_at", 1).to_list(100000)
     settled = [p for p in picks if p.get("result") in ("WIN", "LOSS", "PUSH")]
     settled_sorted = sorted(settled, key=lambda p: p.get("settled_at") or "")
     outcome_calibration = await get_active_outcome_calibration(db)
@@ -121,6 +126,8 @@ async def recompute_performance_daily(db) -> Dict[str, Any]:
 
     doc = {
         "as_of_date": as_of_date,
+        "user_id": user_id,
+        "scope": "user" if user_id else "global",
         "n_picks_total": len(picks),
         "n_picks_settled": n_settled,
         "n_settled_30": n_settled_30,
@@ -148,11 +155,21 @@ async def recompute_performance_daily(db) -> Dict[str, Any]:
         "updated_at": now.isoformat(),
     }
 
-    await db.performance_daily.update_one({"as_of_date": as_of_date}, {"$set": doc}, upsert=True)
+    key: Dict[str, Any] = {"as_of_date": as_of_date}
+    if user_id:
+        key["user_id"] = user_id
+    else:
+        key["scope"] = "global"
+    await db.performance_daily.update_one(key, {"$set": doc}, upsert=True)
     return doc
 
 
-async def get_performance_summary(db, days: int = 90) -> Dict[str, Any]:
-    latest = await db.performance_daily.find_one({}, {"_id": 0}, sort=[("as_of_date", -1)])
-    series = await db.performance_daily.find({}, {"_id": 0}).sort("as_of_date", -1).to_list(days)
+async def get_performance_summary(db, days: int = 90, user_id: Optional[str] = None) -> Dict[str, Any]:
+    query: Dict[str, Any] = {}
+    if user_id:
+        query["user_id"] = user_id
+    else:
+        query["scope"] = "global"
+    latest = await db.performance_daily.find_one(query, {"_id": 0}, sort=[("as_of_date", -1)])
+    series = await db.performance_daily.find(query, {"_id": 0}).sort("as_of_date", -1).to_list(days)
     return {"latest": latest, "series": list(reversed(series))}
