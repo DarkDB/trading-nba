@@ -1,0 +1,16 @@
+name: Capture Closing Lines
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call capture endpoint
+        run: |
+          curl -sS -X POST "https://trading-nba.onrender.com/api/admin/capture-closing-lines/cron?window_minutes=120&limit=500" \
+            -H "X-CRON-KEY: ${{ secrets.CRON_API_KEY }}" \
+            -H "Content-Type: application/json"
