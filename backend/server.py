@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Query
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Query, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -45,6 +45,9 @@ JWT_EXPIRATION_HOURS = int(os.environ.get('JWT_EXPIRATION_HOURS', 24))
 ODDS_API_KEY = os.environ.get('ODDS_API_KEY', '')
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 OPERATIONAL_USER_EMAIL = os.environ.get("OPERATIONAL_USER_EMAIL", "").strip().lower()
+CRON_API_KEY = os.environ.get("CRON_API_KEY", "").strip()
+CLOSE_CAPTURE_ALERT_HOURS = int(os.environ.get("CLOSE_CAPTURE_ALERT_HOURS", 12))
+CLOSE_CAPTURE_ALERT_LOOKBACK_DAYS = int(os.environ.get("CLOSE_CAPTURE_ALERT_LOOKBACK_DAYS", 3))
 
 # ============= OPERATIONAL CONFIG (V1.0) =============
 OPERATIONAL_CONFIG = {
@@ -574,7 +577,7 @@ def generate_recommended_bet_string(home_team: str, away_team: str, home_abbr: s
     return f"{team} {spread_str}"
 
 
-async def capture_closing_lines_task(window_minutes: int = 30, limit: int = 500) -> Dict[str, Any]:
+async def capture_closing_lines_task(window_minutes: int = 120, limit: int = 500) -> Dict[str, Any]:
     """
     Capture closing lines before event start (TheOddsAPI event odds endpoint expires after games).
     """
@@ -689,6 +692,42 @@ async def capture_closing_lines_task(window_minutes: int = 30, limit: int = 500)
         "n_updates_made": n_updates,
         "n_not_found": n_not_found,
         "samples": samples,
+    }
+
+
+async def collect_missing_closing_line_warnings(
+    alert_hours: int = CLOSE_CAPTURE_ALERT_HOURS,
+    lookback_days: int = CLOSE_CAPTURE_ALERT_LOOKBACK_DAYS,
+    sample_limit: int = 10,
+) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    alert_cutoff = now - timedelta(hours=max(1, int(alert_hours)))
+    lookback_start = now - timedelta(days=max(1, int(lookback_days)))
+
+    query = {
+        "book": "pinnacle",
+        "result": None,
+        "close_spread": None,
+        "commence_time": {"$gte": lookback_start.isoformat(), "$lte": alert_cutoff.isoformat()},
+    }
+    missing = await db.predictions.find(
+        query,
+        {"_id": 0, "id": 1, "event_id": 1, "commence_time": 1, "open_spread": 1, "recommended_side": 1},
+    ).sort("commence_time", 1).to_list(5000)
+
+    count = len(missing)
+    if count > 0:
+        logger.warning(
+            "CLOSING_CAPTURE_DELAY_WARNING: %s picks missing close_spread after %sh (lookback=%sd)",
+            count,
+            alert_hours,
+            lookback_days,
+        )
+    return {
+        "missing_after_hours": alert_hours,
+        "lookback_days": lookback_days,
+        "count": count,
+        "sample": missing[:sample_limit],
     }
 
 # ============= FEATURE CALCULATION =============
@@ -1125,7 +1164,8 @@ async def closing_capture_scheduler_loop():
     """Simple scheduler: capture closing lines every 5 minutes."""
     while True:
         try:
-            await capture_closing_lines_task(window_minutes=30, limit=500)
+            await capture_closing_lines_task(window_minutes=120, limit=500)
+            await collect_missing_closing_line_warnings()
         except Exception as e:
             logger.error(f"closing_capture_scheduler_loop error: {e}")
         await asyncio.sleep(300)
@@ -1357,11 +1397,30 @@ async def snapshot_close_lines(minutes_before: int = 60, force: bool = False, us
 
 
 @api_router.post("/admin/capture-closing-lines")
-async def capture_closing_lines(window_minutes: int = 30, limit: int = 500, user=Depends(get_current_user)):
+async def capture_closing_lines(window_minutes: int = 120, limit: int = 500, user=Depends(get_current_user)):
     """
     Capture close lines from TheOddsAPI before event start.
     """
     return await capture_closing_lines_task(window_minutes=window_minutes, limit=limit)
+
+
+@api_router.post("/admin/capture-closing-lines/cron")
+async def capture_closing_lines_cron(
+    window_minutes: int = 120,
+    limit: int = 500,
+    x_cron_key: Optional[str] = Header(default=None, alias="X-CRON-KEY"),
+):
+    """
+    Cron-safe endpoint for Render Cron Job.
+    Requires CRON_API_KEY env and matching X-CRON-KEY header.
+    """
+    if not CRON_API_KEY:
+        raise HTTPException(status_code=503, detail="CRON_API_KEY_NOT_CONFIGURED")
+    if not x_cron_key or x_cron_key != CRON_API_KEY:
+        raise HTTPException(status_code=401, detail="INVALID_CRON_KEY")
+    capture = await capture_closing_lines_task(window_minutes=window_minutes, limit=limit)
+    warnings = await collect_missing_closing_line_warnings()
+    return {"status": "completed", "capture": capture, "warnings": warnings}
 
 
 @api_router.get("/admin/diagnostics/closing-capture")
@@ -1375,10 +1434,13 @@ async def diagnostics_closing_capture(user=Depends(get_current_user)):
     n_open_predictions = await db.predictions.count_documents(open_query)
     n_close_captured = await db.predictions.count_documents({**open_query, "close_spread": {"$ne": None}})
     pct_with_closing_line = (n_close_captured / n_open_predictions) if n_open_predictions > 0 else 0.0
+    delayed = await collect_missing_closing_line_warnings(sample_limit=5)
     return {
         "n_open_predictions": n_open_predictions,
         "n_close_captured": n_close_captured,
         "pct_with_closing_line": pct_with_closing_line,
+        "n_missing_after_alert_hours": delayed.get("count"),
+        "missing_after_alert_hours_sample": delayed.get("sample", []),
     }
 
 @api_router.post("/admin/refresh-results", response_model=SyncStatus)
