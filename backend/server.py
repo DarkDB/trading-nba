@@ -27,6 +27,9 @@ from backend.market_eval import backfill_close_snapshot
 from backend.performance import recompute_performance_daily, get_performance_summary
 from backend.selection_backtest import run_selection_sweep
 from backend.walkforward_selection import run_walkforward_selection
+from backend.research_all_games import build_all_game_predictions
+from backend.research_grade_all import grade_all_predictions
+from backend.research_metrics import compute_research_metrics, research_coverage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -4456,6 +4459,26 @@ async def walkforward_selection_report(
         start_date=start_date,
         end_date=end_date,
     )
+
+
+@api_router.post("/admin/research/generate-all")
+async def research_generate_all(days: int = 2, user=Depends(get_current_user)):
+    return await build_all_game_predictions(db=db, days=days, book="pinnacle", market_type="spreads")
+
+
+@api_router.post("/admin/research/grade-all")
+async def research_grade_all(days_back: int = 7, user=Depends(get_current_user)):
+    return await grade_all_predictions(db=db, days_back=days_back)
+
+
+@api_router.get("/admin/research/metrics")
+async def research_metrics(days_back: int = 30, by: str = "day", user=Depends(get_current_user)):
+    return await compute_research_metrics(db=db, days_back=days_back, by=by)
+
+
+@api_router.get("/admin/research/coverage")
+async def research_coverage_route(days: int = 2, user=Depends(get_current_user)):
+    return await research_coverage(db=db, days=days)
 
 
 @api_router.post("/admin/run-full-calibration")
