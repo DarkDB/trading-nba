@@ -45,7 +45,27 @@ def _compute_drawdown(equity: List[float]) -> float:
     return max_dd
 
 
+async def _ensure_performance_indexes(db) -> None:
+    """
+    Migrate legacy unique index on as_of_date to a scoped unique index.
+    Legacy index caused collisions between different users on same day.
+    """
+    idx = await db.performance_daily.index_information()
+
+    legacy_name = "uq_performance_daily_as_of_date"
+    legacy = idx.get(legacy_name)
+    if legacy and legacy.get("key") == [("as_of_date", 1)]:
+        await db.performance_daily.drop_index(legacy_name)
+
+    await db.performance_daily.create_index(
+        [("as_of_date", 1), ("scope", 1), ("user_id", 1)],
+        unique=True,
+        name="uq_performance_daily_as_of_date_scope_user",
+    )
+
+
 async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict[str, Any]:
+    await _ensure_performance_indexes(db)
     now = datetime.now(timezone.utc)
     as_of_date = now.strftime("%Y-%m-%d")
 
@@ -158,6 +178,7 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
     key: Dict[str, Any] = {"as_of_date": as_of_date}
     if user_id:
         key["user_id"] = user_id
+        key["scope"] = "user"
     else:
         key["scope"] = "global"
     await db.performance_daily.update_one(key, {"$set": doc}, upsert=True)
