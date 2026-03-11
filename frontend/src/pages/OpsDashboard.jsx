@@ -25,6 +25,11 @@ export default function OpsDashboard() {
   const [closingCapture, setClosingCapture] = useState(null);
   const [performanceLatest, setPerformanceLatest] = useState(null);
   const [gatesStatus, setGatesStatus] = useState(null);
+  const tierFunnel = {
+    pre: lastResponse?.pre_filter_counts || null,
+    post: lastResponse?.post_filter_counts || null,
+    drops: lastResponse?.drop_reasons_summary || null,
+  };
 
   const runAction = async (key, fn) => {
     setLoading((s) => ({ ...s, [key]: true }));
@@ -119,6 +124,26 @@ export default function OpsDashboard() {
             <Metric label="avg_p_cover_real_50" value={performanceLatest?.avg_p_cover_real_50} />
             <Metric label="brier_score_50" value={performanceLatest?.brier_score_50} />
             <Metric label="gates_status" value={gatesStatus ? JSON.stringify(gatesStatus) : '-'} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Tier Funnel</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">pre_filter_counts</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(tierFunnel.pre, null, 2)}</pre>
+            </div>
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">post_filter_counts</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(tierFunnel.post, null, 2)}</pre>
+            </div>
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">drop_reasons_summary</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(tierFunnel.drops, null, 2)}</pre>
+            </div>
           </CardContent>
         </Card>
       </div>

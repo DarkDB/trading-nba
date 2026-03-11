@@ -30,6 +30,7 @@ from backend.walkforward_selection import run_walkforward_selection
 from backend.research_all_games import build_all_game_predictions
 from backend.research_grade_all import grade_all_predictions
 from backend.research_metrics import compute_research_metrics, research_coverage
+from backend.research_backfill import backfill_from_predictions
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -210,7 +211,7 @@ class OperativePick(BaseModel):
 
 class TradingSettings(BaseModel):
     """Paper Trading v4.0 configuration"""
-    enabled_tiers: List[str] = Field(default=["A", "B"])
+    enabled_tiers: List[str] = Field(default=["A", "B", "C"])
     blowout_filter_enabled: bool = Field(default=True)
     blowout_pred_margin_threshold: float = Field(default=12.0)
     max_picks_per_day: int = Field(default=3)
@@ -1454,7 +1455,7 @@ async def refresh_results(user=Depends(get_current_user)):
 
 # Default trading settings
 DEFAULT_TRADING_SETTINGS = {
-    "enabled_tiers": ["A", "B"],
+    "enabled_tiers": ["A", "B", "C"],
     "blowout_filter_enabled": True,
     "blowout_pred_margin_threshold": 12.0,
     "max_picks_per_day": 3,
@@ -1480,6 +1481,12 @@ async def get_trading_settings(user=Depends(get_current_user)):
     if not settings:
         # Return defaults if not configured
         return DEFAULT_TRADING_SETTINGS
+    enabled = settings.get("enabled_tiers") or []
+    enabled_norm = [t for t in ["A", "B", "C"] if t in {str(x).upper() for x in enabled}]
+    if "C" not in enabled_norm:
+        enabled_norm.append("C")
+        settings["enabled_tiers"] = enabled_norm
+        await db.trading_settings.update_one({"_id": "default"}, {"$set": {"enabled_tiers": enabled_norm}})
     return settings
 
 @api_router.post("/admin/trading/settings")
@@ -3486,7 +3493,10 @@ async def generate_picks(user=Depends(get_current_user)):
     
     blowout_filter_enabled = trading_settings.get('blowout_filter_enabled', True)
     blowout_threshold = trading_settings.get('blowout_pred_margin_threshold', 12.0)
-    enabled_tiers = trading_settings.get('enabled_tiers', ['A', 'B'])
+    enabled_tiers_raw = trading_settings.get('enabled_tiers', ['A', 'B', 'C']) or []
+    enabled_tiers = [t for t in ["A", "B", "C"] if t in {str(x).upper() for x in enabled_tiers_raw}]
+    if "C" not in enabled_tiers:
+        enabled_tiers.append("C")
     max_picks_per_day = int(trading_settings.get('max_picks_per_day', 3))
     min_abs_model_edge = float(trading_settings.get('min_abs_model_edge', 1.5))
     clv_gate_enabled = bool(trading_settings.get('clv_gate_enabled', True))
@@ -3590,60 +3600,79 @@ async def generate_picks(user=Depends(get_current_user)):
         day_market_count[key] = day_market_count.get(key, 0) + 1
     
     picks = []
+    analyzed_picks = []
     tier_a_picks = []  # EV >= 5%
     tier_b_picks = []  # 2% <= EV < 5%
     tier_c_picks = []  # -1% <= EV <= 1% (control)
     blowout_filtered_picks = []  # Picks excluded by blowout filter
     blowout_filtered_count = 0
     global_duplicate_skipped_count = 0
+    pre_filter_counts = {"A": 0, "B": 0, "C": 0, "below_C": 0}
+    post_filter_counts = {"A": 0, "B": 0, "C": 0}
+    drop_reasons_summary = {
+        "below_threshold": 0,
+        "tier_disabled": 0,
+        "blowout_filtered": 0,
+        "max_picks_per_day_trim": 0,
+        "confidence_not_high": 0,
+        "missing_outcome_calibration": 0,
+        "other": 0,
+    }
     
     for event in events:
         lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
-        
-        # PAPER TRADING: Require Pinnacle
         ref_line = select_reference_line(lines, require_pinnacle=True)
         has_pinnacle = ref_line is not None
-        
-        if not has_pinnacle:
-            continue  # Skip non-Pinnacle for paper trading
 
-        market_key = ref_line['bookmaker_key']
-        event_day_madrid = madrid_day_key(event['commence_time'])
-        if event_day_madrid:
-            key = (event_day_madrid, market_key)
-            if day_market_count.get(key, 0) >= max_picks_per_day:
-                continue
-        
+        if not has_pinnacle:
+            analyzed_picks.append({
+                "event_id": event['event_id'],
+                "home_team": event['home_team'],
+                "away_team": event['away_team'],
+                "commence_time": event['commence_time'],
+                "tier_candidate": None,
+                "passed_enabled_tier": False,
+                "passed_min_edge": False,
+                "passed_blowout_filter": False,
+                "passed_confidence": False,
+                "final_selected": False,
+                "exclusion_reason": "other",
+            })
+            drop_reasons_summary["other"] += 1
+            continue
+
         matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
         if not matchup_data:
+            analyzed_picks.append({
+                "event_id": event['event_id'],
+                "home_team": event['home_team'],
+                "away_team": event['away_team'],
+                "commence_time": event['commence_time'],
+                "tier_candidate": None,
+                "passed_enabled_tier": False,
+                "passed_min_edge": False,
+                "passed_blowout_filter": False,
+                "passed_confidence": False,
+                "final_selected": False,
+                "exclusion_reason": "other",
+            })
+            drop_reasons_summary["other"] += 1
             continue
-            
-        # PAPER TRADING: Require HIGH confidence
-        if matchup_data['confidence'] != 'high':
-            continue
-            
+
         features = matchup_data['features']
         home_abbr, away_abbr = matchup_data['home_abbr'], matchup_data['away_abbr']
-        
         X = np.array([[features.get(col, 0) for col in feature_cols]])
         X_scaled = scaler.transform(X)
         pred_margin = float(model.predict(X_scaled)[0])
-        
-        market_spread = ref_line['spread_point_home']
-        
-        # Cover threshold calculation
-        cover_threshold = -market_spread
-        
-        # model_edge = pred_margin - cover_threshold (raw edge vs market)
-        model_edge = pred_margin - cover_threshold
 
-        # Always-on guardrail: minimum absolute model edge
-        if abs(model_edge) < min_abs_model_edge:
-            continue
-        
+        market_spread = ref_line['spread_point_home']
+        cover_threshold = -market_spread
+        model_edge = pred_margin - cover_threshold
+        passed_min_edge = abs(model_edge) >= min_abs_model_edge
+        passed_confidence = matchup_data['confidence'] == 'high'
+
         home_covers = pred_margin > cover_threshold
         away_covers = pred_margin < cover_threshold
-        
         if home_covers:
             recommended_side = "HOME"
             edge_points = model_edge
@@ -3656,8 +3685,7 @@ async def generate_picks(user=Depends(get_current_user)):
             recommended_side = "HOME"
             edge_points = 0.0
             open_price = ref_line['price_home_decimal']
-        
-        # Calculate probability and EV using VS_MARKET calibration
+
         p_cover, z = calculate_p_cover_vs_market(model_edge, alpha, beta, sigma_residual, recommended_side)
         implied_prob = 1.0 / open_price if open_price > 1.0 else 0.5
         ev = calculate_ev(p_cover, open_price)
@@ -3669,68 +3697,88 @@ async def generate_picks(user=Depends(get_current_user)):
                 open_spread=market_spread,
                 calibration_doc=outcome_calibration,
             )
-        
-        # Adjusted edge after shrinkage
+
         adjusted_edge = beta * model_edge + alpha
-        
-        # PAPER TRADING v4.0: Anti-blowout filter fields
-        # is_favorite_pick: True if we're betting on the favorite (spread < 0 for home, spread > 0 for away)
         spread_abs = abs(market_spread)
         if recommended_side == "HOME":
-            is_favorite_pick = market_spread < 0  # Home is favorite if spread is negative
-        else:  # AWAY
-            is_favorite_pick = market_spread > 0  # Away is favorite if spread is positive
-        
-        # Blowout filter: exclude favorites with high pred_margin predictions
+            is_favorite_pick = market_spread < 0
+        else:
+            is_favorite_pick = market_spread > 0
         blowout_filter_hit = (
-            blowout_filter_enabled and 
-            is_favorite_pick and 
+            blowout_filter_enabled and
+            is_favorite_pick and
             abs(pred_margin) > blowout_threshold
         )
-        
-        # Tier classification
-        # Conservative mode: use calibrated p_cover_real when available.
-        # Fallback mode: legacy EV tiers.
-        if p_cover_real is not None:
-            if p_cover_real >= tier_a_min_p_cover_real:
-                tier = "A"
-            elif p_cover_real >= tier_b_min_p_cover_real:
-                tier = "B"
-            elif p_cover_real >= tier_c_min_p_cover_real:
-                tier = "C"
-            else:
-                tier = None
-        else:
-            if ev >= 0.05:
-                tier = "A"
-            elif ev >= 0.02:
-                tier = "B"
-            elif -0.01 <= ev <= 0.01:
-                tier = "C"
-            else:
-                tier = None
+        passed_blowout_filter = not blowout_filter_hit
 
-        # CLV gate (degrade to Tier C only) only when minimum data threshold is met
+        # Temporary conservative mode: classify tiers by VS_MARKET probability (p_cover).
+        if p_cover >= tier_a_min_p_cover_real:
+            tier_candidate = "A"
+        elif p_cover >= tier_b_min_p_cover_real:
+            tier_candidate = "B"
+        elif p_cover >= tier_c_min_p_cover_real:
+            tier_candidate = "C"
+        else:
+            tier_candidate = None
+
+        if tier_candidate is None:
+            pre_filter_counts["below_C"] += 1
+        else:
+            pre_filter_counts[tier_candidate] += 1
+
+        tier = tier_candidate
         if clv_gate_active and tier in ("A", "B"):
             tier = "C"
-        
-        # Signal based on EV (new system)
+
+        passed_enabled_tier = tier in enabled_tiers if tier else False
+
+        market_key = ref_line['bookmaker_key']
+        event_day_madrid = madrid_day_key(event['commence_time'])
+        passed_max_picks_per_day = True
+        if event_day_madrid:
+            day_key = (event_day_madrid, market_key)
+            passed_max_picks_per_day = day_market_count.get(day_key, 0) < max_picks_per_day
+
+        final_selected = bool(
+            tier is not None
+            and passed_enabled_tier
+            and passed_min_edge
+            and passed_confidence
+            and passed_blowout_filter
+            and passed_max_picks_per_day
+        )
+
+        exclusion_reason = None
+        if not final_selected:
+            if tier_candidate is None or not passed_min_edge:
+                exclusion_reason = "below_threshold"
+            elif not passed_enabled_tier:
+                exclusion_reason = "tier_disabled"
+            elif not passed_confidence:
+                exclusion_reason = "confidence_not_high"
+            elif not passed_blowout_filter:
+                exclusion_reason = "blowout_filtered"
+            elif not passed_max_picks_per_day:
+                exclusion_reason = "max_picks_per_day_trim"
+            elif use_outcome_calibration and not using_outcome_calibration:
+                exclusion_reason = "missing_outcome_calibration"
+            else:
+                exclusion_reason = "other"
+            drop_reasons_summary[exclusion_reason] += 1
+
         signal_ev = calculate_signal_ev(ev)
         signal_edge = calculate_signal(edge_points)  # Keep for backward compat
-        
         recommended_bet_string = generate_recommended_bet_string(
             event['home_team'], event['away_team'], home_abbr, away_abbr,
             market_spread, recommended_side
         )
-        
         explanation = generate_explanation(
             event['home_team'], event['away_team'], home_abbr, away_abbr,
             pred_margin, market_spread, edge_points,
             recommended_side, matchup_data['confidence'], model_version
         )
-        
         now_ts = datetime.now(timezone.utc).isoformat()
-        
+
         pick = {
             "id": str(uuid.uuid4()),
             "user_id": user['id'],
@@ -3802,9 +3850,24 @@ async def generate_picks(user=Depends(get_current_user)):
             "margin_final": None,
             "covered": None,
             "profit_units": None,
-            "settled_at": None
+            "settled_at": None,
+            # Observability
+            "tier_candidate": tier_candidate,
+            "passed_enabled_tier": passed_enabled_tier,
+            "passed_min_edge": passed_min_edge,
+            "passed_blowout_filter": passed_blowout_filter,
+            "passed_confidence": passed_confidence,
+            "final_selected": final_selected,
+            "exclusion_reason": exclusion_reason,
         }
-        
+
+        if not final_selected:
+            analyzed_picks.append(pick)
+            if blowout_filter_hit:
+                blowout_filtered_picks.append(pick)
+                blowout_filtered_count += 1
+            continue
+
         # Cross-user dedupe guardrail for pending picks:
         # prevent duplicate operational picks with same event/book/side/spread.
         existing_pending_same_pick = await db.predictions.find_one(
@@ -3820,26 +3883,26 @@ async def generate_picks(user=Depends(get_current_user)):
         )
         if existing_pending_same_pick and existing_pending_same_pick.get("user_id") != user["id"]:
             global_duplicate_skipped_count += 1
+            pick["final_selected"] = False
+            pick["exclusion_reason"] = "other"
+            analyzed_picks.append(pick)
+            drop_reasons_summary["other"] += 1
             continue
 
         await db.predictions.update_one(
             {"user_id": user['id'], "event_id": event['event_id']},
             {"$set": pick}, upsert=True
         )
-        
-        picks.append(pick)
 
+        picks.append(pick)
+        analyzed_picks.append(pick)
+
+        if tier in post_filter_counts:
+            post_filter_counts[tier] += 1
         if event_day_madrid:
             key = (event_day_madrid, market_key)
             day_market_count[key] = day_market_count.get(key, 0) + 1
-        
-        # Paper Trading v4.0: Track blowout filtered picks
-        if blowout_filter_hit:
-            blowout_filtered_picks.append(pick)
-            blowout_filtered_count += 1
-            continue  # Don't add to tier lists if blowout filtered
-        
-        # Classify into tier lists (Paper Trading v3.0)
+
         if tier == "A":
             tier_a_picks.append(pick)
         elif tier == "B":
@@ -3891,7 +3954,7 @@ async def generate_picks(user=Depends(get_current_user)):
             "tier_b_min_p_cover_real": tier_b_min_p_cover_real,
             "tier_c_min_p_cover_real": tier_c_min_p_cover_real
         },
-        "tiering_mode": "P_COVER_REAL" if using_outcome_calibration else "EV_FALLBACK",
+        "tiering_mode": "P_COVER",
         "warnings": warnings,
         "guardrails": {
             "clv_gate_enabled": clv_gate_enabled,
@@ -3904,19 +3967,11 @@ async def generate_picks(user=Depends(get_current_user)):
             "max_drawdown_total": max_drawdown_total,
             "dd_gate_max_drawdown_threshold": dd_gate_max_drawdown_threshold
         },
-        "tier_thresholds": (
-            {
-                "A": f"p_cover_real >= {tier_a_min_p_cover_real:.2f}",
-                "B": f"{tier_b_min_p_cover_real:.2f} <= p_cover_real < {tier_a_min_p_cover_real:.2f}",
-                "C": f"{tier_c_min_p_cover_real:.2f} <= p_cover_real < {tier_b_min_p_cover_real:.2f}",
-            }
-            if using_outcome_calibration
-            else {
-                "A": "EV >= 5%",
-                "B": "2% <= EV < 5%",
-                "C": "-1% <= EV <= +1%",
-            }
-        ),
+        "tier_thresholds": {
+            "A": f"p_cover >= {tier_a_min_p_cover_real:.2f}",
+            "B": f"{tier_b_min_p_cover_real:.2f} <= p_cover < {tier_a_min_p_cover_real:.2f}",
+            "C": f"{tier_c_min_p_cover_real:.2f} <= p_cover < {tier_b_min_p_cover_real:.2f}",
+        },
         "summary": {
             "total_analyzed": len(events),
             "total_valid_picks": len(picks),
@@ -3926,13 +3981,16 @@ async def generate_picks(user=Depends(get_current_user)):
             "blowout_filtered_count": blowout_filtered_count,
             "global_duplicate_skipped_count": global_duplicate_skipped_count,
         },
+        "pre_filter_counts": pre_filter_counts,
+        "post_filter_counts": post_filter_counts,
+        "drop_reasons_summary": drop_reasons_summary,
         "tiers": {
             "A": tier_a_picks,
             "B": tier_b_picks,
             "C": tier_c_picks
         },
         "blowout_filtered": blowout_filtered_picks,
-        "all_picks": picks,
+        "all_picks": analyzed_picks,
         "generated_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -4481,6 +4539,11 @@ async def research_coverage_route(days: int = 2, user=Depends(get_current_user))
     return await research_coverage(db=db, days=days)
 
 
+@api_router.post("/admin/research/backfill-from-predictions")
+async def research_backfill_from_predictions(days_back: int = 30, user=Depends(get_current_user)):
+    return await backfill_from_predictions(db=db, days_back=days_back)
+
+
 @api_router.post("/admin/run-full-calibration")
 async def run_full_calibration(user=Depends(get_current_user)):
     """
@@ -4532,6 +4595,8 @@ async def run_daily_paper(user=Depends(get_current_user)):
     today_madrid = datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Madrid")).date()
     picks_today = 0
     for p in generate_res.get("all_picks", []):
+        if p.get("final_selected") is False:
+            continue
         created_at = p.get("created_at")
         if not created_at:
             continue
