@@ -81,6 +81,7 @@ async def backfill_close_snapshot(
     sample_raw_responses: List[Dict[str, Any]] = []
     n_api_calls = 0
     n_found_markets = 0
+    invalid_timing_skipped = 0
     probed_event_ids = set()
     considered_event_ids = set()
 
@@ -191,6 +192,20 @@ async def backfill_close_snapshot(
             clv_spread = close_spread - open_spread if close_spread is not None else None
 
         now_ts = now.isoformat()
+        commence_dt = _safe_iso_to_dt(p.get("commence_time", ""))
+        if commence_dt is not None and commence_dt.tzinfo is None:
+            commence_dt = commence_dt.replace(tzinfo=timezone.utc)
+        # Data-quality guardrail:
+        # do not persist close values captured at/after start unless force=true.
+        if not force and commence_dt is not None and now >= commence_dt:
+            await db.predictions.update_one(
+                {"id": p["id"]},
+                {"$set": {"close_capture_invalid_timing": True}},
+            )
+            invalid_timing_skipped += 1
+            skipped += 1
+            continue
+
         existing_captured = p.get("close_captured_at") or p.get("close_ts")
         update_doc: Dict[str, Any] = {}
 
@@ -243,6 +258,7 @@ async def backfill_close_snapshot(
         "force": force,
         "updated": updated,
         "skipped": skipped,
+        "invalid_timing_skipped": invalid_timing_skipped,
         "missing_lines": missing,
         "warnings": warnings,
         "examples": examples,

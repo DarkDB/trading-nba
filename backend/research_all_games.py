@@ -237,6 +237,7 @@ async def build_all_game_predictions(
                 "model_version": model_version,
                 "model_id": model_id,
                 "calibration_id": calibration_id,
+                "snapshot_source": "research_generate_all:pinnacle:spreads",
                 "alpha_used": alpha,
                 "beta_used": beta,
                 "sigma_used": sigma,

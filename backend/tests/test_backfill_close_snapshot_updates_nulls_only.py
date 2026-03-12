@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from backend.market_eval import backfill_close_snapshot
 
@@ -60,6 +61,17 @@ class FakeDB:
 
 
 def test_backfill_close_snapshot_updates_nulls_only():
+    now = datetime.now(timezone.utc)
+    settled_1 = (now - timedelta(hours=2)).isoformat()
+    settled_2 = (now - timedelta(hours=1)).isoformat()
+    open_1 = (now - timedelta(hours=4)).isoformat()
+    open_2 = (now - timedelta(hours=3)).isoformat()
+    created_1 = (now - timedelta(hours=4)).isoformat()
+    created_2 = (now - timedelta(hours=3)).isoformat()
+    # Keep commence in the future so new timing guardrail doesn't skip this test case.
+    commence_1 = (now + timedelta(hours=2)).isoformat()
+    commence_2 = (now + timedelta(hours=3)).isoformat()
+
     picks = [
         {
             "id": "p-1",
@@ -68,10 +80,10 @@ def test_backfill_close_snapshot_updates_nulls_only():
             "open_spread": -5.0,
             "book": "pinnacle",
             "result": "WIN",
-            "settled_at": "2026-03-04T04:00:00+00:00",
-            "open_ts": "2026-03-04T02:10:00+00:00",
-            "created_at": "2026-03-04T02:20:00+00:00",
-            "commence_time": "2026-03-04T02:00:00+00:00",
+            "settled_at": settled_1,
+            "open_ts": open_1,
+            "created_at": created_1,
+            "commence_time": commence_1,
             "close_spread": -5.5,
             "close_price": None,
             "clv_spread": None,
@@ -85,10 +97,10 @@ def test_backfill_close_snapshot_updates_nulls_only():
             "open_spread": -5.0,
             "book": "pinnacle",
             "result": "LOSS",
-            "settled_at": "2026-03-04T05:00:00+00:00",
-            "open_ts": "2026-03-04T03:10:00+00:00",
-            "created_at": "2026-03-04T03:20:00+00:00",
-            "commence_time": "2026-03-04T03:00:00+00:00",
+            "settled_at": settled_2,
+            "open_ts": open_2,
+            "created_at": created_2,
+            "commence_time": commence_2,
             "close_spread": None,
             "close_price": None,
             "clv_spread": None,

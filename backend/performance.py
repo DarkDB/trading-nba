@@ -14,6 +14,18 @@ def _to_float(v: Any) -> Optional[float]:
         return None
 
 
+def _to_dt(v: Any) -> Optional[datetime]:
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if isinstance(v, str) and v:
+        try:
+            dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
 def _result_to_label(result: str, include_push_as_half: bool = False) -> Optional[float]:
     if result == "WIN":
         return 1.0
@@ -50,18 +62,22 @@ async def _ensure_performance_indexes(db) -> None:
     Migrate legacy unique index on as_of_date to a scoped unique index.
     Legacy index caused collisions between different users on same day.
     """
+    if not hasattr(db.performance_daily, "index_information"):
+        return
     idx = await db.performance_daily.index_information()
 
     legacy_name = "uq_performance_daily_as_of_date"
     legacy = idx.get(legacy_name)
     if legacy and legacy.get("key") == [("as_of_date", 1)]:
-        await db.performance_daily.drop_index(legacy_name)
+        if hasattr(db.performance_daily, "drop_index"):
+            await db.performance_daily.drop_index(legacy_name)
 
-    await db.performance_daily.create_index(
-        [("as_of_date", 1), ("scope", 1), ("user_id", 1)],
-        unique=True,
-        name="uq_performance_daily_as_of_date_scope_user",
-    )
+    if hasattr(db.performance_daily, "create_index"):
+        await db.performance_daily.create_index(
+            [("as_of_date", 1), ("scope", 1), ("user_id", 1)],
+            unique=True,
+            name="uq_performance_daily_as_of_date_scope_user",
+        )
 
 
 async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict[str, Any]:
@@ -82,6 +98,8 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
 
     pnl = []
     clv = []
+    clv_valid = []
+    n_clv_invalid_timing = 0
     p_cover_real = []
     labels = []
     equity = [0.0]
@@ -94,6 +112,13 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
         c = _to_float(p.get("clv_spread"))
         if c is not None:
             clv.append(c)
+            close_dt = _to_dt(p.get("close_captured_at")) or _to_dt(p.get("close_ts"))
+            commence_dt = _to_dt(p.get("commence_time"))
+            invalid_timing = bool(close_dt and commence_dt and close_dt >= commence_dt)
+            if invalid_timing:
+                n_clv_invalid_timing += 1
+            else:
+                clv_valid.append(c)
         pr = _to_float(p.get("p_cover_real"))
         if pr is None and outcome_calibration is not None:
             model_edge = _to_float(p.get("model_edge"))
@@ -156,6 +181,11 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
         "clv_mean_50": _rolling(clv, 50),
         "clv_mean_total": mean(clv) if clv else None,
         "clv_median_50": sorted(clv[-50:])[len(clv[-50:]) // 2] if clv[-50:] else None,
+        "n_clv_valid": len(clv_valid),
+        "n_clv_invalid_timing": n_clv_invalid_timing,
+        "mean_clv_valid": mean(clv_valid) if clv_valid else None,
+        "median_clv_valid": sorted(clv_valid)[len(clv_valid) // 2] if clv_valid else None,
+        "market_beating_rate_valid": (sum(1 for x in clv_valid if x > 0) / len(clv_valid)) if clv_valid else None,
         "roi_total": roi_total,
         "roi_30": roi_30,
         "roi_50": roi_50,

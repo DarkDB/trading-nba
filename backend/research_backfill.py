@@ -106,6 +106,7 @@ async def backfill_from_predictions(db, days_back: int = 30) -> Dict[str, Any]:
             "model_version": model_version,
             "model_id": p.get("model_id"),
             "calibration_id": p.get("calibration_id"),
+            "snapshot_source": p.get("snapshot_source") or "backfill_from_predictions",
             "alpha_used": p.get("alpha_used"),
             "beta_used": p.get("beta_used"),
             "sigma_used": p.get("sigma_used"),

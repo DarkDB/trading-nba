@@ -31,6 +31,7 @@ from backend.research_all_games import build_all_game_predictions
 from backend.research_grade_all import grade_all_predictions
 from backend.research_metrics import compute_research_metrics, research_coverage
 from backend.research_backfill import backfill_from_predictions
+from backend.research_consistency import compare_research_vs_picks
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -581,7 +582,7 @@ def generate_recommended_bet_string(home_team: str, away_team: str, home_abbr: s
     return f"{team} {spread_str}"
 
 
-async def capture_closing_lines_task(window_minutes: int = 120, limit: int = 500) -> Dict[str, Any]:
+async def capture_closing_lines_task(window_minutes: int = 120, limit: int = 500, force: bool = False) -> Dict[str, Any]:
     """
     Capture closing lines before event start (TheOddsAPI event odds endpoint expires after games).
     """
@@ -608,6 +609,7 @@ async def capture_closing_lines_task(window_minutes: int = 120, limit: int = 500
     n_api_calls = 0
     n_updates = 0
     n_not_found = 0
+    n_invalid_timing_skipped = 0
     samples = []
 
     async with httpx.AsyncClient(timeout=20.0) as http_client:
@@ -655,6 +657,21 @@ async def capture_closing_lines_task(window_minutes: int = 120, limit: int = 500
                 continue
 
             for p in event_preds:
+                commence_dt = None
+                try:
+                    commence_dt = datetime.fromisoformat((p.get("commence_time") or "").replace("Z", "+00:00"))
+                except Exception:
+                    commence_dt = None
+                if commence_dt is not None and commence_dt.tzinfo is None:
+                    commence_dt = commence_dt.replace(tzinfo=timezone.utc)
+                if not force and commence_dt is not None and now >= commence_dt:
+                    await db.predictions.update_one(
+                        {"id": p["id"]},
+                        {"$set": {"close_capture_invalid_timing": True}},
+                    )
+                    n_invalid_timing_skipped += 1
+                    continue
+
                 home_team = p.get("home_team")
                 away_team = p.get("away_team")
                 recommended_side = p.get("recommended_side", "HOME")
@@ -690,10 +707,12 @@ async def capture_closing_lines_task(window_minutes: int = 120, limit: int = 500
     return {
         "status": "completed",
         "window_minutes": window_minutes,
+        "force": force,
         "n_candidates": len(predictions),
         "n_events_considered": n_events_considered,
         "n_api_calls": n_api_calls,
         "n_updates_made": n_updates,
+        "n_invalid_timing_skipped": n_invalid_timing_skipped,
         "n_not_found": n_not_found,
         "samples": samples,
     }
@@ -1348,6 +1367,12 @@ async def snapshot_close_lines(minutes_before: int = 60, force: bool = False, us
             commence = datetime.fromisoformat(pred['commence_time'].replace('Z', '+00:00'))
             if commence > cutoff:
                 continue  # Not yet close to start
+            if not force and now >= commence:
+                await db.predictions.update_one(
+                    {"id": pred['id']},
+                    {"$set": {"close_capture_invalid_timing": True}},
+                )
+                continue
         except:
             continue
         
@@ -1401,11 +1426,11 @@ async def snapshot_close_lines(minutes_before: int = 60, force: bool = False, us
 
 
 @api_router.post("/admin/capture-closing-lines")
-async def capture_closing_lines(window_minutes: int = 120, limit: int = 500, user=Depends(get_current_user)):
+async def capture_closing_lines(window_minutes: int = 120, limit: int = 500, force: bool = False, user=Depends(get_current_user)):
     """
     Capture close lines from TheOddsAPI before event start.
     """
-    return await capture_closing_lines_task(window_minutes=window_minutes, limit=limit)
+    return await capture_closing_lines_task(window_minutes=window_minutes, limit=limit, force=force)
 
 
 @api_router.post("/admin/capture-closing-lines/cron")
@@ -1422,7 +1447,7 @@ async def capture_closing_lines_cron(
         raise HTTPException(status_code=503, detail="CRON_API_KEY_NOT_CONFIGURED")
     if not x_cron_key or x_cron_key != CRON_API_KEY:
         raise HTTPException(status_code=401, detail="INVALID_CRON_KEY")
-    capture = await capture_closing_lines_task(window_minutes=window_minutes, limit=limit)
+    capture = await capture_closing_lines_task(window_minutes=window_minutes, limit=limit, force=False)
     warnings = await collect_missing_closing_line_warnings()
     return {"status": "completed", "capture": capture, "warnings": warnings}
 
@@ -1836,6 +1861,15 @@ async def snapshot_close_v2(window_minutes: int = 60, force: bool = False, user=
                 results["late"] += 1
         except:
             quality = "UNKNOWN"
+            commence_dt = None
+
+        if not force and commence_dt is not None and now >= commence_dt:
+            await db.predictions.update_one(
+                {"id": pick['id']},
+                {"$set": {"close_capture_invalid_timing": True}},
+            )
+            results["skipped"] += 1
+            continue
         
         recommended_side = pick.get('recommended_side', 'HOME')
         open_spread = pick.get('open_spread', 0)
@@ -3833,6 +3867,7 @@ async def generate_picks(user=Depends(get_current_user)):
             "explanation": explanation,
             "model_id": model_id,
             "model_version": model_version,
+            "snapshot_source": "generate_picks:pinnacle:spreads",
             "created_at": now_ts,
             # Paper Trading v4.0: Anti-blowout fields
             "is_favorite_pick": is_favorite_pick,
@@ -4537,6 +4572,19 @@ async def research_metrics(days_back: int = 30, by: str = "day", user=Depends(ge
 @api_router.get("/admin/research/coverage")
 async def research_coverage_route(days: int = 2, user=Depends(get_current_user)):
     return await research_coverage(db=db, days=days)
+
+
+@api_router.get("/admin/research/consistency")
+async def research_consistency_route(
+    open_ts_tolerance_minutes: int = 180,
+    limit: int = 500,
+    user=Depends(get_current_user),
+):
+    return await compare_research_vs_picks(
+        db=db,
+        open_ts_tolerance_minutes=open_ts_tolerance_minutes,
+        limit=limit,
+    )
 
 
 @api_router.post("/admin/research/backfill-from-predictions")
