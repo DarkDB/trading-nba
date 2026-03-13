@@ -49,6 +49,8 @@ export const adminApi = {
   captureClosingLines: (windowMinutes = 30) => api.post(`/admin/capture-closing-lines?window_minutes=${windowMinutes}`),
   runDailyPaper: () => api.post('/admin/run-daily-paper'),
   getClosingCaptureDiagnostics: () => api.get('/admin/diagnostics/closing-capture'),
+  getMissedClvDiagnostics: (daysBack = 3) => api.get(`/admin/diagnostics/missed-clv?days_back=${daysBack}`),
+  getClvCoverage: (mode = 'current_user', lastN = 200) => api.get(`/admin/diagnostics/clv-coverage?mode=${mode}&last_n=${lastN}`),
   getPerformanceSummary: (days = 90) => api.get(`/admin/performance-summary?days=${days}`),
 };
 

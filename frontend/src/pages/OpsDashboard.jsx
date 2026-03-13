@@ -25,6 +25,9 @@ export default function OpsDashboard() {
   const [closingCapture, setClosingCapture] = useState(null);
   const [performanceLatest, setPerformanceLatest] = useState(null);
   const [gatesStatus, setGatesStatus] = useState(null);
+  const [missedClv, setMissedClv] = useState(null);
+  const [operationalClvCoverage, setOperationalClvCoverage] = useState(null);
+  const [currentUserClvCoverage, setCurrentUserClvCoverage] = useState(null);
   const tierFunnel = {
     pre: lastResponse?.pre_filter_counts || null,
     post: lastResponse?.post_filter_counts || null,
@@ -46,8 +49,8 @@ export default function OpsDashboard() {
       if (key === 'captureClosing') {
         await fetchClosingCapture();
       }
-      if (key === 'runDailyPaper' || key === 'syncUpcoming' || key === 'syncOdds') {
-        await fetchPerformance();
+      if (key === 'runDailyPaper' || key === 'syncUpcoming' || key === 'syncOdds' || key === 'captureClosing') {
+        await Promise.all([fetchPerformance(), fetchClvDiagnostics()]);
       }
       toast.success('Accion completada');
     } catch (e) {
@@ -64,6 +67,17 @@ export default function OpsDashboard() {
     setClosingCapture(res.data);
   };
 
+  const fetchClvDiagnostics = async () => {
+    const [missedRes, operationalRes, currentRes] = await Promise.all([
+      adminApi.getMissedClvDiagnostics(3),
+      adminApi.getClvCoverage('operational', 200),
+      adminApi.getClvCoverage('current_user', 200),
+    ]);
+    setMissedClv(missedRes.data);
+    setOperationalClvCoverage(operationalRes.data);
+    setCurrentUserClvCoverage(currentRes.data);
+  };
+
   const fetchPerformance = async () => {
     const res = await adminApi.getPerformanceSummary(90);
     setPerformanceLatest(res.data?.latest || null);
@@ -72,7 +86,7 @@ export default function OpsDashboard() {
   useEffect(() => {
     (async () => {
       try {
-        await Promise.all([fetchClosingCapture(), fetchPerformance()]);
+        await Promise.all([fetchClosingCapture(), fetchPerformance(), fetchClvDiagnostics()]);
       } catch (e) {
         // silent initial load fail
       }
@@ -108,6 +122,8 @@ export default function OpsDashboard() {
             <Metric label="n_open_predictions" value={closingCapture?.n_open_predictions} />
             <Metric label="n_close_captured" value={closingCapture?.n_close_captured} />
             <Metric label="pct_with_closing_line" value={closingCapture?.pct_with_closing_line} />
+            <Metric label="settled_recent_missing_close" value={closingCapture?.settled_recent_missing_close} />
+            <Metric label="settled_recent_with_close" value={closingCapture?.settled_recent_with_close} />
           </CardContent>
         </Card>
 
@@ -143,6 +159,31 @@ export default function OpsDashboard() {
             <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
               <div className="text-xs text-zinc-400 mb-1">drop_reasons_summary</div>
               <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(tierFunnel.drops, null, 2)}</pre>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>CLV Diagnostics</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <Metric label="missed_clv_recent" value={missedClv?.count} />
+              <Metric label="operational_pct_with_clv" value={operationalClvCoverage?.pct_with_clv} />
+              <Metric label="current_user_pct_with_clv" value={currentUserClvCoverage?.pct_with_clv} />
+            </div>
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">missed_clv_recent</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(missedClv, null, 2)}</pre>
+            </div>
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">operational_clv_coverage</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(operationalClvCoverage, null, 2)}</pre>
+            </div>
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">current_user_clv_coverage</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(currentUserClvCoverage, null, 2)}</pre>
             </div>
           </CardContent>
         </Card>

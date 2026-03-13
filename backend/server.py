@@ -1463,11 +1463,22 @@ async def diagnostics_closing_capture(user=Depends(get_current_user)):
     n_open_predictions = await db.predictions.count_documents(open_query)
     n_close_captured = await db.predictions.count_documents({**open_query, "close_spread": {"$ne": None}})
     pct_with_closing_line = (n_close_captured / n_open_predictions) if n_open_predictions > 0 else 0.0
+    recent_settled_query = {
+        "archived": {"$ne": True},
+        "result": {"$in": ["WIN", "LOSS", "PUSH"]},
+        "settled_at": {"$gte": (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()},
+    }
+    settled_recent_missing_close = await db.predictions.count_documents({**recent_settled_query, "close_spread": None})
+    settled_recent_with_close = await db.predictions.count_documents(
+        {**recent_settled_query, "close_spread": {"$ne": None}}
+    )
     delayed = await collect_missing_closing_line_warnings(sample_limit=5)
     return {
         "n_open_predictions": n_open_predictions,
         "n_close_captured": n_close_captured,
         "pct_with_closing_line": pct_with_closing_line,
+        "settled_recent_missing_close": settled_recent_missing_close,
+        "settled_recent_with_close": settled_recent_with_close,
         "n_missing_after_alert_hours": delayed.get("count"),
         "missing_after_alert_hours_sample": delayed.get("sample", []),
     }
@@ -4441,15 +4452,111 @@ async def performance_summary(days: int = 90, user=Depends(get_current_user)):
     return await get_performance_summary(db, days=days, user_id=user["id"])
 
 
-@api_router.get("/admin/diagnostics/clv-coverage")
-async def diagnostics_clv_coverage(last_n: int = 200, user=Depends(get_current_user)):
-    last_n = max(1, min(int(last_n), 5000))
+def _diag_scope_query(user: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    query: Dict[str, Any] = {"archived": {"$ne": True}}
+    if mode == "operational":
+        return query
+    query["user_id"] = user["id"]
+    return query
+
+
+def _parse_diag_dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+def _capture_eligibility_for_pick(pick: Dict[str, Any]) -> Dict[str, Any]:
+    if pick.get("book") != "pinnacle":
+        return {"was_eligible_for_capture": False, "reason_if_not_eligible": "non_pinnacle_book"}
+
+    commence_dt = _parse_diag_dt(pick.get("commence_time"))
+    if commence_dt is None:
+        return {"was_eligible_for_capture": False, "reason_if_not_eligible": "missing_commence_time"}
+
+    created_dt = _parse_diag_dt(pick.get("open_ts")) or _parse_diag_dt(pick.get("created_at"))
+    if created_dt is None:
+        return {"was_eligible_for_capture": False, "reason_if_not_eligible": "missing_created_or_open_ts"}
+
+    if created_dt >= commence_dt:
+        return {"was_eligible_for_capture": False, "reason_if_not_eligible": "created_after_commence"}
+
+    return {"was_eligible_for_capture": True, "reason_if_not_eligible": None}
+
+
+@api_router.get("/admin/diagnostics/missed-clv")
+async def diagnostics_missed_clv(days_back: int = 3, user=Depends(get_current_user)):
+    days_back = max(1, min(int(days_back), 30))
+    start = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
     picks = await db.predictions.find(
-        {"user_id": user["id"], "archived": {"$ne": True}},
+        {
+            "archived": {"$ne": True},
+            "result": {"$in": ["WIN", "LOSS", "PUSH"]},
+            "settled_at": {"$gte": start},
+            "$or": [{"close_spread": None}, {"clv_spread": None}],
+        },
         {
             "_id": 0,
             "id": 1,
             "event_id": 1,
+            "user_id": 1,
+            "home_team": 1,
+            "away_team": 1,
+            "commence_time": 1,
+            "created_at": 1,
+            "open_ts": 1,
+            "settled_at": 1,
+            "close_spread": 1,
+            "clv_spread": 1,
+            "book": 1,
+            "close_captured_at": 1,
+            "close_ts": 1,
+        },
+    ).sort("settled_at", -1).to_list(500)
+
+    items = []
+    for pick in picks:
+        eligibility = _capture_eligibility_for_pick(pick)
+        items.append(
+            {
+                "id": pick.get("id"),
+                "event_id": pick.get("event_id"),
+                "user_id": pick.get("user_id"),
+                "home_team": pick.get("home_team"),
+                "away_team": pick.get("away_team"),
+                "commence_time": pick.get("commence_time"),
+                "created_at": pick.get("created_at"),
+                "settled_at": pick.get("settled_at"),
+                "close_spread": pick.get("close_spread"),
+                "clv_spread": pick.get("clv_spread"),
+                "close_captured_at": pick.get("close_captured_at") or pick.get("close_ts"),
+                "was_eligible_for_capture": eligibility["was_eligible_for_capture"],
+                "reason_if_not_eligible": eligibility["reason_if_not_eligible"],
+            }
+        )
+
+    return {"days_back": days_back, "count": len(items), "items": items}
+
+
+@api_router.get("/admin/diagnostics/clv-coverage")
+async def diagnostics_clv_coverage(last_n: int = 200, mode: str = "current_user", user=Depends(get_current_user)):
+    last_n = max(1, min(int(last_n), 5000))
+    mode = mode if mode in {"current_user", "operational"} else "current_user"
+    picks = await db.predictions.find(
+        _diag_scope_query(user, mode),
+        {
+            "_id": 0,
+            "id": 1,
+            "event_id": 1,
+            "user_id": 1,
             "open_spread": 1,
             "close_spread": 1,
             "clv_spread": 1,
@@ -4500,6 +4607,7 @@ async def diagnostics_clv_coverage(last_n: int = 200, user=Depends(get_current_u
             break
 
     return {
+        "mode": mode,
         "n_checked": n_checked,
         "n_with_close_spread": n_with_close_spread,
         "n_with_clv_spread": n_with_clv_spread,
