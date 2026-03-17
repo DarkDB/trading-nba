@@ -148,3 +148,38 @@ def test_brier_score_computation_excludes_push():
     doc = asyncio.run(recompute_performance_daily(db))
     # PUSH must be excluded: mean([(0.5-1)^2, (0.5-0)^2]) = 0.25
     assert doc["brier_score_50"] == pytest.approx(0.25, rel=1e-9)
+
+
+def test_performance_separates_shadow_metrics():
+    picks = [
+        {
+            "id": "op-1",
+            "result": "WIN",
+            "model_edge": 1.0,
+            "open_price": 1.91,
+            "open_spread": -4.5,
+            "profit_units": 0.91,
+            "clv_spread": 0.5,
+            "created_at": "2026-03-01T00:00:00+00:00",
+            "settled_at": "2026-03-02T00:00:00+00:00",
+            "is_shadow": False,
+        },
+        {
+            "id": "sh-1",
+            "result": "LOSS",
+            "model_edge": 1.0,
+            "open_price": 1.91,
+            "open_spread": -4.5,
+            "profit_units": -1.0,
+            "clv_spread": -0.5,
+            "created_at": "2026-03-01T01:00:00+00:00",
+            "settled_at": "2026-03-02T01:00:00+00:00",
+            "is_shadow": True,
+        },
+    ]
+    db = FakeDB(picks)
+    doc = asyncio.run(recompute_performance_daily(db))
+    assert doc["roi_operational"] == pytest.approx(0.91, rel=1e-9)
+    assert doc["roi_shadow"] == pytest.approx(-1.0, rel=1e-9)
+    assert doc["clv_operational"] == pytest.approx(0.5, rel=1e-9)
+    assert doc["clv_shadow"] == pytest.approx(-0.5, rel=1e-9)

@@ -1593,6 +1593,31 @@ async def get_strategy_status(user: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
 
+
+def build_shadow_picks(candidate_picks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    shadow_picks: List[Dict[str, Any]] = []
+    counts = {"in_range": 0, "below_range": 0}
+    for pick in candidate_picks:
+        p_cover = float(pick.get("p_cover") or 0.0)
+        model_edge = abs(float(pick.get("model_edge") or 0.0))
+        in_range = 0.54 <= p_cover < 0.60 and model_edge >= 3.0
+        if in_range:
+            counts["in_range"] += 1
+            shadow = dict(pick)
+            shadow["id"] = str(uuid.uuid4())
+            shadow["tier"] = None
+            shadow["is_shadow"] = True
+            shadow["is_operational"] = False
+            shadow["shadow_reason"] = "broad_shadow_profile"
+            shadow["final_selected"] = False
+            shadow["passed_strategy_profile"] = False
+            shadow["strategy_exclusion_reason"] = "shadow_only"
+            shadow["strategy_mode_used"] = shadow.get("strategy_mode_used") or "shadow"
+            shadow_picks.append(shadow)
+        else:
+            counts["below_range"] += 1
+    return {"shadow_picks": shadow_picks, "shadow_counts": counts}
+
 @api_router.get("/admin/trading/settings")
 async def get_trading_settings(user=Depends(get_current_user)):
     """Get current trading settings from DB"""
@@ -2096,7 +2121,8 @@ async def bankroll_simulation(
     # Get settled picks
     query = {
         "result": {"$in": ["WIN", "LOSS", "PUSH"]},
-        "tier": {"$in": tier_list}
+        "tier": {"$in": tier_list},
+        "is_shadow": {"$ne": True},
     }
     
     picks = await db.predictions.find(query, {"_id": 0}).sort("settled_at", 1).to_list(1000)
@@ -3735,7 +3761,7 @@ async def generate_picks(user=Depends(get_current_user)):
 
     # Existing picks count by Madrid day for hard cap
     existing_picks = await db.predictions.find(
-        {"user_id": user['id'], "archived": {"$ne": True}},
+        {"user_id": user['id'], "archived": {"$ne": True}, "is_shadow": {"$ne": True}},
         {"_id": 0, "commence_time": 1},
     ).to_list(2000)
     day_count = {}
@@ -3935,6 +3961,8 @@ async def generate_picks(user=Depends(get_current_user)):
             "covered": None,
             "profit_units": None,
             "settled_at": None,
+            "is_shadow": False,
+            "is_operational": False,
             # Observability
             "tier_candidate": tier_candidate,
             "passed_enabled_tier": passed_enabled_tier,
@@ -3951,6 +3979,7 @@ async def generate_picks(user=Depends(get_current_user)):
             blowout_filtered_count += 1
 
     strategy_result = select_operational_picks(candidate_picks, strategy_config, perf or {})
+    shadow_result = build_shadow_picks(candidate_picks)
     analyzed_picks = strategy_result["all_picks"]
     tier_a_picks = list(strategy_result["tiers"]["A"])
     tier_b_picks = []
@@ -3958,6 +3987,7 @@ async def generate_picks(user=Depends(get_current_user)):
     pre_filter_counts = strategy_result["pre_filter_counts"]
     post_filter_counts = strategy_result["post_filter_counts"]
     drop_reasons_summary = strategy_result["drop_reasons_summary"]
+    shadow_picks = shadow_result["shadow_picks"]
 
     for pick in analyzed_picks:
         if not pick.get("final_selected"):
@@ -3982,15 +4012,38 @@ async def generate_picks(user=Depends(get_current_user)):
             continue
 
         await db.predictions.update_one(
-            {"user_id": user['id'], "event_id": pick['event_id']},
-            {"$set": pick}, upsert=True
+            {"user_id": user['id'], "event_id": pick['event_id'], "is_shadow": {"$ne": True}},
+            {"$set": {**pick, "is_operational": True, "is_shadow": False}}, upsert=True
         )
+        pick["is_operational"] = True
+        pick["is_shadow"] = False
         picks.append(pick)
 
     tier_a_picks = [p for p in picks if p.get("tier") == "A"]
+
+    persisted_shadow_picks = []
+    for shadow in shadow_picks:
+        existing_pending_same_shadow = await db.predictions.find_one(
+            {
+                "user_id": user["id"],
+                "event_id": shadow["event_id"],
+                "is_shadow": True,
+                "result": None,
+                "archived": {"$ne": True},
+            },
+            {"_id": 0, "id": 1},
+        )
+        if existing_pending_same_shadow:
+            shadow["id"] = existing_pending_same_shadow.get("id", shadow["id"])
+        await db.predictions.update_one(
+            {"user_id": user["id"], "event_id": shadow["event_id"], "is_shadow": True},
+            {"$set": shadow},
+            upsert=True,
+        )
+        persisted_shadow_picks.append(shadow)
     
     # Log stats
-    logger.info(f"Generated {len(picks)} picks. Tier A: {len(tier_a_picks)}, Blowout filtered: {blowout_filtered_count}. Strategy mode: {strategy_result['strategy_mode']}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
+    logger.info(f"Generated {len(picks)} operational picks and {len(persisted_shadow_picks)} shadow picks. Tier A: {len(tier_a_picks)}, Blowout filtered: {blowout_filtered_count}. Strategy mode: {strategy_result['strategy_mode']}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
     if global_duplicate_skipped_count > 0:
         warnings.append(f"GLOBAL_DUPLICATE_SKIPPED: {global_duplicate_skipped_count}")
     
@@ -4060,6 +4113,7 @@ async def generate_picks(user=Depends(get_current_user)):
         "summary": {
             "total_analyzed": len(events),
             "total_valid_picks": len(picks),
+            "total_shadow_picks": len(persisted_shadow_picks),
             "tier_a_count": len(tier_a_picks),
             "tier_b_count": len(tier_b_picks),
             "tier_c_count": len(tier_c_picks),
@@ -4075,13 +4129,16 @@ async def generate_picks(user=Depends(get_current_user)):
             "C": tier_c_picks
         },
         "blowout_filtered": blowout_filtered_picks,
+        "operational_picks": picks,
+        "shadow_picks": persisted_shadow_picks,
+        "shadow_counts": shadow_result["shadow_counts"],
         "all_picks": analyzed_picks,
         "generated_at": datetime.now(timezone.utc).isoformat()
     }
 
 @api_router.get("/picks")
 async def get_picks(user=Depends(get_current_user)):
-    picks = await db.predictions.find({"user_id": user['id'], "archived": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    picks = await db.predictions.find({"user_id": user['id'], "archived": {"$ne": True}, "is_shadow": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(100)
     return {"picks": picks}
 
 @api_router.get("/picks/operative")
@@ -4091,12 +4148,13 @@ async def get_operative_picks(user=Depends(get_current_user)):
         "user_id": user['id'],
         "do_not_bet": False,
         "archived": {"$ne": True},
+        "is_shadow": {"$ne": True},
     }, {"_id": 0}).sort("commence_time", 1).to_list(50)
     return {"picks": picks, "count": len(picks)}
 
 @api_router.get("/history")
 async def get_history(signal: Optional[str] = None, covered: Optional[bool] = None, user=Depends(get_current_user)):
-    query = {"user_id": user['id'], "actual_margin": {"$ne": None}}
+    query = {"user_id": user['id'], "actual_margin": {"$ne": None}, "is_shadow": {"$ne": True}}
     if signal:
         query["signal"] = signal
     if covered is not None:
@@ -4128,7 +4186,7 @@ async def export_history(user=Depends(get_current_user)):
     import csv
     import io
     
-    predictions = await db.predictions.find({"user_id": user['id']}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    predictions = await db.predictions.find({"user_id": user['id'], "is_shadow": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=[

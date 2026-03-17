@@ -110,7 +110,9 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
     if user_id:
         query["user_id"] = user_id
 
-    picks = await db.predictions.find(query, {"_id": 0}).sort("created_at", 1).to_list(100000)
+    picks_all = await db.predictions.find(query, {"_id": 0}).sort("created_at", 1).to_list(100000)
+    picks = [p for p in picks_all if p.get("is_shadow") is not True]
+    shadow_picks = [p for p in picks_all if p.get("is_shadow") is True]
     settled = [p for p in picks if p.get("result") in ("WIN", "LOSS", "PUSH")]
     settled_sorted = sorted(settled, key=lambda p: p.get("settled_at") or "")
     outcome_calibration = await get_active_outcome_calibration(db)
@@ -189,6 +191,20 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
         if pairs:
             brier_50 = mean([(p - y) ** 2 for p, y in pairs])
 
+    def _compute_lane_metrics(source_picks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        settled_lane = [p for p in source_picks if p.get("result") in ("WIN", "LOSS", "PUSH")]
+        pnl_lane = [_to_float(p.get("profit_units")) for p in settled_lane if _to_float(p.get("profit_units")) is not None]
+        clv_lane = [_to_float(p.get("clv_spread")) for p in settled_lane if _to_float(p.get("clv_spread")) is not None]
+        return {
+            "n_total": len(source_picks),
+            "n_settled": len(settled_lane),
+            "roi": (sum(pnl_lane) / len(pnl_lane)) if pnl_lane else None,
+            "clv_mean": mean(clv_lane) if clv_lane else None,
+        }
+
+    operational_lane = _compute_lane_metrics(picks)
+    shadow_lane = _compute_lane_metrics(shadow_picks)
+
     drawdown_units = _compute_drawdown_units(pnl)
     roi_rolling_20 = (sum(pnl[-20:]) / min(20, n_settled)) if n_settled > 0 else None
     roi_rolling_50 = (sum(pnl[-50:]) / min(50, n_settled)) if n_settled > 0 else None
@@ -199,6 +215,8 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
         "scope": "user" if user_id else "global",
         "n_picks_total": len(picks),
         "n_picks_settled": n_settled,
+        "n_shadow_picks_total": len(shadow_picks),
+        "n_shadow_picks_settled": shadow_lane["n_settled"],
         "n_settled_30": n_settled_30,
         "n_settled_50": n_settled_50,
         "clv_mean_30": _rolling(clv, 30),
@@ -230,6 +248,10 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
         "winrate_30": winrate_30,
         "winrate_50": winrate_50,
         "brier_score_50": brier_50,
+        "roi_operational": operational_lane["roi"],
+        "roi_shadow": shadow_lane["roi"],
+        "clv_operational": operational_lane["clv_mean"],
+        "clv_shadow": shadow_lane["clv_mean"],
         "updated_at": now.isoformat(),
     }
 

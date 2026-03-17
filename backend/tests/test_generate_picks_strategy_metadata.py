@@ -86,7 +86,7 @@ class IdentityScaler:
 
 class FixedModel:
     def predict(self, _x):
-        return np.array([6.0])
+        return np.array([8.0])
 
 
 def test_generate_picks_returns_strategy_metadata(monkeypatch):
@@ -126,3 +126,5 @@ def test_generate_picks_returns_strategy_metadata(monkeypatch):
     assert response["strategy_mode"] == "normal"
     assert "active_strategy_thresholds" in response
     assert "dynamic_guardrails_triggered" in response
+    assert "shadow_picks" in response
+    assert len(response["shadow_picks"]) == 1

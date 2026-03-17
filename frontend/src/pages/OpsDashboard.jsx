@@ -140,11 +140,14 @@ export default function OpsDashboard() {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Metric label="n_picks_total" value={performanceLatest?.n_picks_total} />
             <Metric label="n_picks_settled" value={performanceLatest?.n_picks_settled} />
+            <Metric label="n_shadow_picks_total" value={performanceLatest?.n_shadow_picks_total} />
             <Metric label="roi_total" value={performanceLatest?.roi_total} />
+            <Metric label="roi_shadow" value={performanceLatest?.roi_shadow} />
             <Metric label="roi_50" value={performanceLatest?.roi_50} />
             <Metric label="winrate_50" value={performanceLatest?.winrate_50} />
             <Metric label="avg_p_cover_real_50" value={performanceLatest?.avg_p_cover_real_50} />
             <Metric label="brier_score_50" value={performanceLatest?.brier_score_50} />
+            <Metric label="clv_shadow" value={performanceLatest?.clv_shadow} />
             <Metric label="gates_status" value={gatesStatus ? JSON.stringify(gatesStatus) : '-'} />
           </CardContent>
         </Card>
