@@ -52,6 +52,8 @@ export const adminApi = {
   getMissedClvDiagnostics: (daysBack = 3) => api.get(`/admin/diagnostics/missed-clv?days_back=${daysBack}`),
   getClvCoverage: (mode = 'current_user', lastN = 200) => api.get(`/admin/diagnostics/clv-coverage?mode=${mode}&last_n=${lastN}`),
   getPerformanceSummary: (days = 90) => api.get(`/admin/performance-summary?days=${days}`),
+  getStrategyStatus: () => api.get('/admin/strategy/current'),
+  getStrategyBacktest: () => api.get('/admin/report/strategy-backtest'),
 };
 
 // User

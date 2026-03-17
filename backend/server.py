@@ -26,6 +26,13 @@ from backend.calibration_outcome import (
 from backend.market_eval import backfill_close_snapshot
 from backend.performance import recompute_performance_daily, get_performance_summary
 from backend.selection_backtest import run_selection_sweep
+from backend.strategy_backtest import run_strategy_backtest
+from backend.strategy_engine import (
+    DEFAULT_STRATEGY_CONFIG,
+    evaluate_strategy_state,
+    normalize_strategy_config,
+    select_operational_picks,
+)
 from backend.walkforward_selection import run_walkforward_selection
 from backend.research_all_games import build_all_game_predictions
 from backend.research_grade_all import grade_all_predictions
@@ -247,6 +254,39 @@ class TradingSettingsUpdate(BaseModel):
     flat_stake_pct: Optional[float] = None
     kelly_fraction: Optional[float] = None
     kelly_cap_pct: Optional[float] = None
+
+
+class StrategyConfig(BaseModel):
+    strategy_profile: str = Field(default="adaptive_v1")
+    enabled_tiers: List[str] = Field(default=["A"])
+    min_p_cover: float = Field(default=0.56)
+    max_p_cover: float = Field(default=0.58)
+    min_abs_model_edge: float = Field(default=3.0)
+    max_picks_per_day: int = Field(default=2)
+    use_clv_filter: bool = Field(default=True)
+    min_clv_for_live_validation: float = Field(default=0.0)
+    use_roi_guard: bool = Field(default=True)
+    roi_guard_threshold: float = Field(default=-0.05)
+    use_market_beating_rate_guard: bool = Field(default=True)
+    min_market_beating_rate: float = Field(default=0.45)
+    use_drawdown_guard: bool = Field(default=True)
+    max_drawdown_threshold: float = Field(default=5.0)
+
+
+class StrategyConfigUpdate(BaseModel):
+    enabled_tiers: Optional[List[str]] = None
+    min_p_cover: Optional[float] = None
+    max_p_cover: Optional[float] = None
+    min_abs_model_edge: Optional[float] = None
+    max_picks_per_day: Optional[int] = None
+    use_clv_filter: Optional[bool] = None
+    min_clv_for_live_validation: Optional[float] = None
+    use_roi_guard: Optional[bool] = None
+    roi_guard_threshold: Optional[float] = None
+    use_market_beating_rate_guard: Optional[bool] = None
+    min_market_beating_rate: Optional[float] = None
+    use_drawdown_guard: Optional[bool] = None
+    max_drawdown_threshold: Optional[float] = None
 
 class PickResultInput(BaseModel):
     """Input for registering pick results"""
@@ -1510,6 +1550,49 @@ DEFAULT_TRADING_SETTINGS = {
     "updated_at": None
 }
 
+
+async def get_strategy_config() -> Dict[str, Any]:
+    raw = await db.strategy_configs.find_one({"_id": "adaptive_v1"}, {"_id": 0})
+    return normalize_strategy_config(raw or DEFAULT_STRATEGY_CONFIG)
+
+
+async def get_strategy_performance_context(user_id: Optional[str]) -> Dict[str, Any]:
+    perf_user = None
+    if user_id:
+        perf_user = await db.performance_daily.find_one({"user_id": user_id}, {"_id": 0}, sort=[("as_of_date", -1)])
+        if perf_user and (perf_user.get("n_picks_settled") or 0) > 0:
+            perf_user["context_scope"] = "user"
+            return perf_user
+    perf_global = await db.performance_daily.find_one({"scope": "global"}, {"_id": 0}, sort=[("as_of_date", -1)])
+    if perf_global:
+        perf_global["context_scope"] = "global"
+        return perf_global
+    return {"context_scope": "none"}
+
+
+async def get_strategy_status(user: Dict[str, Any]) -> Dict[str, Any]:
+    strategy_config = await get_strategy_config()
+    perf = await get_strategy_performance_context(user.get("id"))
+    state = evaluate_strategy_state(strategy_config, perf)
+    return {
+        "strategy_profile": state["strategy_profile"],
+        "strategy_mode": state["strategy_mode"],
+        "active_strategy_thresholds": state["active_strategy_thresholds"],
+        "dynamic_guardrails_triggered": state["dynamic_guardrails_triggered"],
+        "context_scope": perf.get("context_scope"),
+        "performance_metrics": {
+            "roi_rolling_20": perf.get("roi_rolling_20"),
+            "roi_rolling_50": perf.get("roi_rolling_50"),
+            "n_clv_valid": perf.get("n_clv_valid"),
+            "market_beating_rate_valid": perf.get("market_beating_rate_valid"),
+            "mean_clv_valid": perf.get("mean_clv_valid"),
+            "median_clv_valid": perf.get("median_clv_valid"),
+            "current_drawdown_units": perf.get("current_drawdown_units"),
+            "max_drawdown_total": perf.get("max_drawdown_total"),
+            "max_drawdown_total_units": perf.get("max_drawdown_total_units"),
+        },
+    }
+
 @api_router.get("/admin/trading/settings")
 async def get_trading_settings(user=Depends(get_current_user)):
     """Get current trading settings from DB"""
@@ -1524,6 +1607,22 @@ async def get_trading_settings(user=Depends(get_current_user)):
         settings["enabled_tiers"] = enabled_norm
         await db.trading_settings.update_one({"_id": "default"}, {"$set": {"enabled_tiers": enabled_norm}})
     return settings
+
+
+@api_router.get("/admin/strategy/current")
+async def admin_get_strategy_status(user=Depends(get_current_user)):
+    return await get_strategy_status(user)
+
+
+@api_router.post("/admin/strategy/config")
+async def update_strategy_config(payload: StrategyConfigUpdate, user=Depends(get_current_user)):
+    current = await get_strategy_config()
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    current.update(update)
+    current["updated_at"] = datetime.now(timezone.utc).isoformat()
+    current["_id"] = "adaptive_v1"
+    await db.strategy_configs.update_one({"_id": "adaptive_v1"}, {"$set": current}, upsert=True)
+    return normalize_strategy_config(current)
 
 @api_router.post("/admin/trading/settings")
 async def update_trading_settings(update: TradingSettingsUpdate, user=Depends(get_current_user)):
@@ -3583,8 +3682,10 @@ async def generate_picks(user=Depends(get_current_user)):
             detail="LEGACY_SIGMA_DETECTED: sigma_residual=12.0 is forbidden. Re-run /api/admin/model/calibrate-vs-market."
         )
 
+    strategy_config = await get_strategy_config()
+
     # Load latest persistent performance snapshot (if available)
-    perf = await db.performance_daily.find_one({"user_id": user["id"]}, {"_id": 0}, sort=[("as_of_date", -1)])
+    perf = await get_strategy_performance_context(user.get("id"))
     clv_gate_active = False
     dd_gate_active = False
     clv_median_50 = None
@@ -3622,6 +3723,8 @@ async def generate_picks(user=Depends(get_current_user)):
     if dd_gate_active and effective_stake_mode == "KELLY":
         effective_stake_mode = "FLAT"
 
+    strategy_status = evaluate_strategy_state(strategy_config, perf or {})
+
     outcome_calibration = await get_active_outcome_calibration(db) if use_outcome_calibration else None
     using_outcome_calibration = outcome_calibration is not None
     warnings = []
@@ -3630,39 +3733,23 @@ async def generate_picks(user=Depends(get_current_user)):
     
     events = await db.upcoming_events.find({"status": "pending"}, {"_id": 0}).to_list(100)  # Increased limit
 
-    # Existing picks count by Madrid day + market (book) for hard cap
+    # Existing picks count by Madrid day for hard cap
     existing_picks = await db.predictions.find(
         {"user_id": user['id'], "archived": {"$ne": True}},
-        {"_id": 0, "commence_time": 1, "book": 1},
+        {"_id": 0, "commence_time": 1},
     ).to_list(2000)
-    day_market_count = {}
+    day_count = {}
     for p in existing_picks:
         d_key = madrid_day_key(p.get("commence_time", ""))
-        market_key = p.get("book")
-        if not d_key or not market_key:
+        if not d_key:
             continue
-        key = (d_key, market_key)
-        day_market_count[key] = day_market_count.get(key, 0) + 1
+        day_count[d_key] = day_count.get(d_key, 0) + 1
     
     picks = []
-    analyzed_picks = []
-    tier_a_picks = []  # EV >= 5%
-    tier_b_picks = []  # 2% <= EV < 5%
-    tier_c_picks = []  # -1% <= EV <= 1% (control)
+    candidate_picks = []
     blowout_filtered_picks = []  # Picks excluded by blowout filter
     blowout_filtered_count = 0
     global_duplicate_skipped_count = 0
-    pre_filter_counts = {"A": 0, "B": 0, "C": 0, "below_C": 0}
-    post_filter_counts = {"A": 0, "B": 0, "C": 0}
-    drop_reasons_summary = {
-        "below_threshold": 0,
-        "tier_disabled": 0,
-        "blowout_filtered": 0,
-        "max_picks_per_day_trim": 0,
-        "confidence_not_high": 0,
-        "missing_outcome_calibration": 0,
-        "other": 0,
-    }
     
     for event in events:
         lines = await db.market_lines.find({"event_id": event['event_id']}, {"_id": 0}).to_list(20)
@@ -3670,7 +3757,7 @@ async def generate_picks(user=Depends(get_current_user)):
         has_pinnacle = ref_line is not None
 
         if not has_pinnacle:
-            analyzed_picks.append({
+            candidate_picks.append({
                 "event_id": event['event_id'],
                 "home_team": event['home_team'],
                 "away_team": event['away_team'],
@@ -3683,12 +3770,11 @@ async def generate_picks(user=Depends(get_current_user)):
                 "final_selected": False,
                 "exclusion_reason": "other",
             })
-            drop_reasons_summary["other"] += 1
             continue
 
         matchup_data = await calculate_matchup_features(event['home_team'], event['away_team'])
         if not matchup_data:
-            analyzed_picks.append({
+            candidate_picks.append({
                 "event_id": event['event_id'],
                 "home_team": event['home_team'],
                 "away_team": event['away_team'],
@@ -3701,7 +3787,6 @@ async def generate_picks(user=Depends(get_current_user)):
                 "final_selected": False,
                 "exclusion_reason": "other",
             })
-            drop_reasons_summary["other"] += 1
             continue
 
         features = matchup_data['features']
@@ -3756,60 +3841,13 @@ async def generate_picks(user=Depends(get_current_user)):
         )
         passed_blowout_filter = not blowout_filter_hit
 
-        # Temporary conservative mode: classify tiers by VS_MARKET probability (p_cover).
-        if p_cover >= tier_a_min_p_cover_real:
-            tier_candidate = "A"
-        elif p_cover >= tier_b_min_p_cover_real:
-            tier_candidate = "B"
-        elif p_cover >= tier_c_min_p_cover_real:
-            tier_candidate = "C"
-        else:
-            tier_candidate = None
+        tier_candidate = None
+        tier = None
+        passed_enabled_tier = False
 
-        if tier_candidate is None:
-            pre_filter_counts["below_C"] += 1
-        else:
-            pre_filter_counts[tier_candidate] += 1
-
-        tier = tier_candidate
-        if clv_gate_active and tier in ("A", "B"):
-            tier = "C"
-
-        passed_enabled_tier = tier in enabled_tiers if tier else False
-
-        market_key = ref_line['bookmaker_key']
         event_day_madrid = madrid_day_key(event['commence_time'])
-        passed_max_picks_per_day = True
-        if event_day_madrid:
-            day_key = (event_day_madrid, market_key)
-            passed_max_picks_per_day = day_market_count.get(day_key, 0) < max_picks_per_day
-
-        final_selected = bool(
-            tier is not None
-            and passed_enabled_tier
-            and passed_min_edge
-            and passed_confidence
-            and passed_blowout_filter
-            and passed_max_picks_per_day
-        )
-
+        final_selected = False
         exclusion_reason = None
-        if not final_selected:
-            if tier_candidate is None or not passed_min_edge:
-                exclusion_reason = "below_threshold"
-            elif not passed_enabled_tier:
-                exclusion_reason = "tier_disabled"
-            elif not passed_confidence:
-                exclusion_reason = "confidence_not_high"
-            elif not passed_blowout_filter:
-                exclusion_reason = "blowout_filtered"
-            elif not passed_max_picks_per_day:
-                exclusion_reason = "max_picks_per_day_trim"
-            elif use_outcome_calibration and not using_outcome_calibration:
-                exclusion_reason = "missing_outcome_calibration"
-            else:
-                exclusion_reason = "other"
-            drop_reasons_summary[exclusion_reason] += 1
 
         signal_ev = calculate_signal_ev(ev)
         signal_edge = calculate_signal(edge_points)  # Keep for backward compat
@@ -3905,23 +3943,31 @@ async def generate_picks(user=Depends(get_current_user)):
             "passed_confidence": passed_confidence,
             "final_selected": final_selected,
             "exclusion_reason": exclusion_reason,
+            "existing_day_count": day_count.get(event_day_madrid, 0) if event_day_madrid else 0,
         }
+        candidate_picks.append(pick)
+        if blowout_filter_hit:
+            blowout_filtered_picks.append(pick)
+            blowout_filtered_count += 1
 
-        if not final_selected:
-            analyzed_picks.append(pick)
-            if blowout_filter_hit:
-                blowout_filtered_picks.append(pick)
-                blowout_filtered_count += 1
+    strategy_result = select_operational_picks(candidate_picks, strategy_config, perf or {})
+    analyzed_picks = strategy_result["all_picks"]
+    tier_a_picks = list(strategy_result["tiers"]["A"])
+    tier_b_picks = []
+    tier_c_picks = []
+    pre_filter_counts = strategy_result["pre_filter_counts"]
+    post_filter_counts = strategy_result["post_filter_counts"]
+    drop_reasons_summary = strategy_result["drop_reasons_summary"]
+
+    for pick in analyzed_picks:
+        if not pick.get("final_selected"):
             continue
-
-        # Cross-user dedupe guardrail for pending picks:
-        # prevent duplicate operational picks with same event/book/side/spread.
         existing_pending_same_pick = await db.predictions.find_one(
             {
-                "event_id": event["event_id"],
-                "book": ref_line["bookmaker_key"],
-                "recommended_side": recommended_side,
-                "open_spread": market_spread,
+                "event_id": pick["event_id"],
+                "book": pick["book"],
+                "recommended_side": pick["recommended_side"],
+                "open_spread": pick["open_spread"],
                 "result": None,
                 "archived": {"$ne": True},
             },
@@ -3930,39 +3976,21 @@ async def generate_picks(user=Depends(get_current_user)):
         if existing_pending_same_pick and existing_pending_same_pick.get("user_id") != user["id"]:
             global_duplicate_skipped_count += 1
             pick["final_selected"] = False
+            pick["strategy_exclusion_reason"] = "other"
             pick["exclusion_reason"] = "other"
-            analyzed_picks.append(pick)
             drop_reasons_summary["other"] += 1
             continue
 
         await db.predictions.update_one(
-            {"user_id": user['id'], "event_id": event['event_id']},
+            {"user_id": user['id'], "event_id": pick['event_id']},
             {"$set": pick}, upsert=True
         )
-
         picks.append(pick)
-        analyzed_picks.append(pick)
 
-        if tier in post_filter_counts:
-            post_filter_counts[tier] += 1
-        if event_day_madrid:
-            key = (event_day_madrid, market_key)
-            day_market_count[key] = day_market_count.get(key, 0) + 1
-
-        if tier == "A":
-            tier_a_picks.append(pick)
-        elif tier == "B":
-            tier_b_picks.append(pick)
-        elif tier == "C":
-            tier_c_picks.append(pick)
-    
-    # Sort each tier by EV (descending)
-    tier_a_picks.sort(key=lambda p: p['ev'], reverse=True)
-    tier_b_picks.sort(key=lambda p: p['ev'], reverse=True)
-    tier_c_picks.sort(key=lambda p: abs(p['ev']))  # C closer to 0 EV first
+    tier_a_picks = [p for p in picks if p.get("tier") == "A"]
     
     # Log stats
-    logger.info(f"Generated {len(picks)} picks. Tier A: {len(tier_a_picks)}, Tier B: {len(tier_b_picks)}, Tier C: {len(tier_c_picks)}, Blowout filtered: {blowout_filtered_count}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
+    logger.info(f"Generated {len(picks)} picks. Tier A: {len(tier_a_picks)}, Blowout filtered: {blowout_filtered_count}. Strategy mode: {strategy_result['strategy_mode']}. Mode: {probability_mode}, beta={beta:.3f}, sigma={sigma_residual:.2f}")
     if global_duplicate_skipped_count > 0:
         warnings.append(f"GLOBAL_DUPLICATE_SKIPPED: {global_duplicate_skipped_count}")
     
@@ -4000,7 +4028,12 @@ async def generate_picks(user=Depends(get_current_user)):
             "tier_b_min_p_cover_real": tier_b_min_p_cover_real,
             "tier_c_min_p_cover_real": tier_c_min_p_cover_real
         },
-        "tiering_mode": "P_COVER",
+        "strategy_profile": strategy_result["strategy_profile"],
+        "strategy_mode": strategy_result["strategy_mode"],
+        "strategy_context_scope": (perf or {}).get("context_scope"),
+        "active_strategy_thresholds": strategy_result["active_strategy_thresholds"],
+        "dynamic_guardrails_triggered": strategy_result["dynamic_guardrails_triggered"],
+        "tiering_mode": "P_COVER_STRATEGY_ENGINE",
         "warnings": warnings,
         "guardrails": {
             "clv_gate_enabled": clv_gate_enabled,
@@ -4011,12 +4044,18 @@ async def generate_picks(user=Depends(get_current_user)):
             "dd_gate_active": dd_gate_active,
             "n_picks_settled": n_picks_settled,
             "max_drawdown_total": max_drawdown_total,
+            "max_drawdown_total_units": (perf or {}).get("max_drawdown_total_units") if perf else None,
+            "roi_rolling_20": (perf or {}).get("roi_rolling_20") if perf else None,
+            "roi_rolling_50": (perf or {}).get("roi_rolling_50") if perf else None,
+            "n_clv_valid": (perf or {}).get("n_clv_valid") if perf else None,
+            "market_beating_rate_valid": (perf or {}).get("market_beating_rate_valid") if perf else None,
+            "mean_clv_valid": (perf or {}).get("mean_clv_valid") if perf else None,
             "dd_gate_max_drawdown_threshold": dd_gate_max_drawdown_threshold
         },
         "tier_thresholds": {
-            "A": f"p_cover >= {tier_a_min_p_cover_real:.2f}",
-            "B": f"{tier_b_min_p_cover_real:.2f} <= p_cover < {tier_a_min_p_cover_real:.2f}",
-            "C": f"{tier_c_min_p_cover_real:.2f} <= p_cover < {tier_b_min_p_cover_real:.2f}",
+            "A": f"{strategy_result['active_strategy_thresholds']['min_p_cover']:.2f} <= p_cover < {strategy_result['active_strategy_thresholds']['max_p_cover']:.2f}",
+            "B": "disabled",
+            "C": "disabled",
         },
         "summary": {
             "total_analyzed": len(events),
@@ -4659,6 +4698,16 @@ async def walkforward_selection_report(
         step_days=step_days,
         start_date=start_date,
         end_date=end_date,
+    )
+
+
+@api_router.get("/admin/report/strategy-backtest")
+async def strategy_backtest_report(user=Depends(get_current_user)):
+    strategy_config = await get_strategy_config()
+    return await run_strategy_backtest(
+        db=db,
+        out_path="backend/data/strategy_backtest.json",
+        strategy_config=strategy_config,
     )
 
 

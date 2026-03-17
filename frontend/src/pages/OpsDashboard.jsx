@@ -28,6 +28,7 @@ export default function OpsDashboard() {
   const [missedClv, setMissedClv] = useState(null);
   const [operationalClvCoverage, setOperationalClvCoverage] = useState(null);
   const [currentUserClvCoverage, setCurrentUserClvCoverage] = useState(null);
+  const [strategyStatus, setStrategyStatus] = useState(null);
   const tierFunnel = {
     pre: lastResponse?.pre_filter_counts || null,
     post: lastResponse?.post_filter_counts || null,
@@ -49,8 +50,8 @@ export default function OpsDashboard() {
       if (key === 'captureClosing') {
         await fetchClosingCapture();
       }
-      if (key === 'runDailyPaper' || key === 'syncUpcoming' || key === 'syncOdds' || key === 'captureClosing') {
-        await Promise.all([fetchPerformance(), fetchClvDiagnostics()]);
+      if (key === 'runDailyPaper' || key === 'syncUpcoming' || key === 'syncOdds' || key === 'captureClosing' || key === 'generatePicks') {
+        await Promise.all([fetchPerformance(), fetchClvDiagnostics(), fetchStrategyStatus()]);
       }
       toast.success('Accion completada');
     } catch (e) {
@@ -83,10 +84,15 @@ export default function OpsDashboard() {
     setPerformanceLatest(res.data?.latest || null);
   };
 
+  const fetchStrategyStatus = async () => {
+    const res = await adminApi.getStrategyStatus();
+    setStrategyStatus(res.data);
+  };
+
   useEffect(() => {
     (async () => {
       try {
-        await Promise.all([fetchClosingCapture(), fetchPerformance(), fetchClvDiagnostics()]);
+        await Promise.all([fetchClosingCapture(), fetchPerformance(), fetchClvDiagnostics(), fetchStrategyStatus()]);
       } catch (e) {
         // silent initial load fail
       }
@@ -159,6 +165,32 @@ export default function OpsDashboard() {
             <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
               <div className="text-xs text-zinc-400 mb-1">drop_reasons_summary</div>
               <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(tierFunnel.drops, null, 2)}</pre>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Strategy Engine</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Metric label="strategy_profile" value={strategyStatus?.strategy_profile} />
+              <Metric label="strategy_mode" value={strategyStatus?.strategy_mode} />
+              <Metric label="roi_rolling_20" value={strategyStatus?.performance_metrics?.roi_rolling_20} />
+              <Metric label="roi_rolling_50" value={strategyStatus?.performance_metrics?.roi_rolling_50} />
+              <Metric label="market_beating_rate_valid" value={strategyStatus?.performance_metrics?.market_beating_rate_valid} />
+              <Metric label="mean_clv_valid" value={strategyStatus?.performance_metrics?.mean_clv_valid} />
+              <Metric label="max_drawdown_total" value={strategyStatus?.performance_metrics?.max_drawdown_total} />
+              <Metric label="max_drawdown_total_units" value={strategyStatus?.performance_metrics?.max_drawdown_total_units} />
+            </div>
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">active_strategy_thresholds</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(strategyStatus?.active_strategy_thresholds, null, 2)}</pre>
+            </div>
+            <div className="rounded border border-zinc-700 p-3 bg-zinc-900/40">
+              <div className="text-xs text-zinc-400 mb-1">dynamic_guardrails_triggered</div>
+              <pre className="text-xs text-zinc-200 whitespace-pre-wrap">{JSON.stringify(strategyStatus?.dynamic_guardrails_triggered, null, 2)}</pre>
             </div>
           </CardContent>
         </Card>

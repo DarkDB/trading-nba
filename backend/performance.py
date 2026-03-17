@@ -57,6 +57,26 @@ def _compute_drawdown(equity: List[float]) -> float:
     return max_dd
 
 
+def _compute_drawdown_units(pnl_values: List[float]) -> Dict[str, float]:
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    current_dd = 0.0
+    for v in pnl_values:
+        equity += v
+        if equity > peak:
+            peak = equity
+        dd = peak - equity
+        if dd > max_dd:
+            max_dd = dd
+        current_dd = dd
+    return {
+        "equity_last": equity,
+        "current_drawdown_units": current_dd,
+        "max_drawdown_total_units": max_dd,
+    }
+
+
 async def _ensure_performance_indexes(db) -> None:
     """
     Migrate legacy unique index on as_of_date to a scoped unique index.
@@ -169,6 +189,10 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
         if pairs:
             brier_50 = mean([(p - y) ** 2 for p, y in pairs])
 
+    drawdown_units = _compute_drawdown_units(pnl)
+    roi_rolling_20 = (sum(pnl[-20:]) / min(20, n_settled)) if n_settled > 0 else None
+    roi_rolling_50 = (sum(pnl[-50:]) / min(50, n_settled)) if n_settled > 0 else None
+
     doc = {
         "as_of_date": as_of_date,
         "user_id": user_id,
@@ -189,11 +213,15 @@ async def recompute_performance_daily(db, user_id: Optional[str] = None) -> Dict
         "roi_total": roi_total,
         "roi_30": roi_30,
         "roi_50": roi_50,
+        "roi_rolling_20": roi_rolling_20,
+        "roi_rolling_50": roi_rolling_50,
         "pnl_total": pnl_total,
         "pnl_30": pnl_30,
         "pnl_50": pnl_50,
         "max_drawdown_total": _compute_drawdown(equity),
-        "equity_last": equity[-1],
+        "max_drawdown_total_units": drawdown_units["max_drawdown_total_units"],
+        "current_drawdown_units": drawdown_units["current_drawdown_units"],
+        "equity_last": drawdown_units["equity_last"],
         "last_pick_at": max([p.get("created_at") for p in picks if p.get("created_at")], default=None),
         "last_settle_at": max([p.get("settled_at") for p in settled_sorted if p.get("settled_at")], default=None),
         "avg_p_cover_real_30": _rolling(p_cover_real, 30),

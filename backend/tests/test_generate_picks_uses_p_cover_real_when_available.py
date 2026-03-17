@@ -60,6 +60,16 @@ class FakeDB:
             }
         )
         self.performance_daily = FakeCollection(one=None)
+        self.strategy_configs = FakeCollection(
+            one={
+                "strategy_profile": "adaptive_v1",
+                "enabled_tiers": ["A"],
+                "min_p_cover": 0.56,
+                "max_p_cover": 0.58,
+                "min_abs_model_edge": 3.0,
+                "max_picks_per_day": 2,
+            }
+        )
         self.upcoming_events = FakeCollection(
             docs=[
                 {
@@ -99,7 +109,7 @@ class IdentityScaler:
 
 class FixedModel:
     def predict(self, _x):
-        return np.array([6.0])
+        return np.array([8.0])
 
 
 def test_generate_picks_uses_p_cover_real_when_available(monkeypatch):
@@ -129,15 +139,15 @@ def test_generate_picks_uses_p_cover_real_when_available(monkeypatch):
     monkeypatch.setattr(server, "format_local_time", lambda ts: ts)
     monkeypatch.setattr(server, "generate_recommended_bet_string", lambda *_args, **_kwargs: "HOME -4.0")
     monkeypatch.setattr(server, "generate_explanation", lambda *_args, **_kwargs: "test")
-    monkeypatch.setattr(server, "calculate_p_cover_vs_market", lambda *_args, **_kwargs: (0.55, 0.2))
+    monkeypatch.setattr(server, "calculate_p_cover_vs_market", lambda *_args, **_kwargs: (0.565, 0.2))
     monkeypatch.setattr(server, "calculate_ev", lambda p, price: p * (price - 1) - (1 - p))
     monkeypatch.setattr(server, "calculate_signal_ev", lambda _ev: "green")
     monkeypatch.setattr(server, "calculate_signal", lambda _edge: "green")
 
     response = asyncio.run(server.generate_picks(user={"id": "u-1"}))
-    assert response["tiering_mode"] == "P_COVER_REAL"
+    assert response["tiering_mode"] == "P_COVER_STRATEGY_ENGINE"
     assert response["summary"]["total_valid_picks"] == 1
     pick = response["all_picks"][0]
     assert pick["p_cover_real"] is not None
-    assert pick["p_cover_real"] >= 0.54
+    assert pick["passed_strategy_profile"] is True
     assert pick["tier"] == "A"
