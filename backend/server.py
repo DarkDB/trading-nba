@@ -1598,6 +1598,9 @@ def build_shadow_picks(candidate_picks: List[Dict[str, Any]]) -> Dict[str, Any]:
     shadow_picks: List[Dict[str, Any]] = []
     counts = {"in_range": 0, "below_range": 0}
     for pick in candidate_picks:
+        if pick.get("final_selected"):
+            counts["below_range"] += 1
+            continue
         p_cover = float(pick.get("p_cover") or 0.0)
         model_edge = abs(float(pick.get("model_edge") or 0.0))
         in_range = 0.54 <= p_cover < 0.60 and model_edge >= 3.0
@@ -1608,11 +1611,14 @@ def build_shadow_picks(candidate_picks: List[Dict[str, Any]]) -> Dict[str, Any]:
             shadow["tier"] = None
             shadow["is_shadow"] = True
             shadow["is_operational"] = False
-            shadow["shadow_reason"] = "broad_shadow_profile"
+            shadow["shadow_reason"] = pick.get("strategy_exclusion_reason") or "broad_shadow_profile"
             shadow["final_selected"] = False
             shadow["passed_strategy_profile"] = False
-            shadow["strategy_exclusion_reason"] = "shadow_only"
+            shadow["strategy_exclusion_reason"] = pick.get("strategy_exclusion_reason") or "shadow_only"
             shadow["strategy_mode_used"] = shadow.get("strategy_mode_used") or "shadow"
+            shadow["final_decision"] = "shadow"
+            shadow["final_decision_reason"] = shadow["shadow_reason"]
+            shadow["final_decision_layer"] = pick.get("strategy_exclusion_layer") or "shadow_builder"
             shadow_picks.append(shadow)
         else:
             counts["below_range"] += 1
@@ -3979,8 +3985,8 @@ async def generate_picks(user=Depends(get_current_user)):
             blowout_filtered_count += 1
 
     strategy_result = select_operational_picks(candidate_picks, strategy_config, perf or {})
-    shadow_result = build_shadow_picks(candidate_picks)
     analyzed_picks = strategy_result["all_picks"]
+    shadow_result = build_shadow_picks(analyzed_picks)
     tier_a_picks = list(strategy_result["tiers"]["A"])
     tier_b_picks = []
     tier_c_picks = []
@@ -4006,9 +4012,13 @@ async def generate_picks(user=Depends(get_current_user)):
         if existing_pending_same_pick and existing_pending_same_pick.get("user_id") != user["id"]:
             global_duplicate_skipped_count += 1
             pick["final_selected"] = False
-            pick["strategy_exclusion_reason"] = "other"
-            pick["exclusion_reason"] = "other"
-            drop_reasons_summary["other"] += 1
+            pick["strategy_exclusion_reason"] = "duplicate_skipped"
+            pick["strategy_exclusion_layer"] = "duplicate_skipped"
+            pick["exclusion_reason"] = "duplicate_skipped"
+            pick["final_decision"] = "dropped"
+            pick["final_decision_reason"] = "duplicate_skipped"
+            pick["final_decision_layer"] = "duplicate_skipped"
+            drop_reasons_summary["duplicate_skipped"] = drop_reasons_summary.get("duplicate_skipped", 0) + 1
             continue
 
         await db.predictions.update_one(
@@ -4017,6 +4027,9 @@ async def generate_picks(user=Depends(get_current_user)):
         )
         pick["is_operational"] = True
         pick["is_shadow"] = False
+        pick["final_decision"] = "operational"
+        pick["final_decision_reason"] = "operational_selected"
+        pick["final_decision_layer"] = "final_selection"
         picks.append(pick)
 
     tier_a_picks = [p for p in picks if p.get("tier") == "A"]
@@ -4086,6 +4099,7 @@ async def generate_picks(user=Depends(get_current_user)):
         "strategy_context_scope": (perf or {}).get("context_scope"),
         "active_strategy_thresholds": strategy_result["active_strategy_thresholds"],
         "dynamic_guardrails_triggered": strategy_result["dynamic_guardrails_triggered"],
+        "legacy_tier_filter_enabled": strategy_result.get("legacy_tier_filter_enabled", False),
         "tiering_mode": "P_COVER_STRATEGY_ENGINE",
         "warnings": warnings,
         "guardrails": {
@@ -4106,9 +4120,13 @@ async def generate_picks(user=Depends(get_current_user)):
             "dd_gate_max_drawdown_threshold": dd_gate_max_drawdown_threshold
         },
         "tier_thresholds": {
-            "A": f"{strategy_result['active_strategy_thresholds']['min_p_cover']:.2f} <= p_cover < {strategy_result['active_strategy_thresholds']['max_p_cover']:.2f}",
-            "B": "disabled",
-            "C": "disabled",
+            "mode": "profile_driven",
+            "HOME_DOG": "tier=A and p_cover>=0.58 and abs_model_edge>=8",
+            "HOME_FAVORITE": "tier in (A,B) and p_cover>=0.56 and abs_model_edge>=5",
+            "AWAY_DOG": "tier=A and p_cover>=0.60 and abs_model_edge>=10 plus rolling profile guards when available",
+            "AWAY_FAVORITE": "shadow_default",
+            "cross_rule": "0.54<=p_cover<0.58 and abs_model_edge>=8 => shadow",
+            "global_rule": "abs_model_edge<3 => block operational"
         },
         "summary": {
             "total_analyzed": len(events),

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "_id": "adaptive_v1",
     "strategy_profile": "adaptive_v1",
-    "enabled_tiers": ["A"],
+    "enabled_tiers": ["A", "B"],
     "min_p_cover": 0.56,
     "max_p_cover": 0.58,
     "min_abs_model_edge": 3.0,
@@ -29,6 +29,29 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "restore_market_beating_rate": 0.55,
     "restore_roi_threshold": 0.0,
     "updated_at": None,
+    "profile_rules": {
+        "HOME_DOG": {
+            "operational_tiers": ["A"],
+            "min_p_cover": 0.58,
+            "min_abs_model_edge": 8.0,
+        },
+        "HOME_FAVORITE": {
+            "operational_tiers": ["A", "B"],
+            "min_p_cover": 0.56,
+            "min_abs_model_edge": 5.0,
+        },
+        "AWAY_DOG": {
+            "operational_tiers": ["A"],
+            "min_p_cover": 0.60,
+            "min_abs_model_edge": 10.0,
+            "min_market_beating_rate_rolling": 0.35,
+            "min_mean_clv_rolling": -0.25,
+        },
+        "AWAY_FAVORITE": {
+            "operational_tiers": [],
+            "shadow_only": True,
+        },
+    },
 }
 
 
@@ -67,7 +90,49 @@ def normalize_strategy_config(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     enabled = cfg.get("enabled_tiers") or ["A"]
     cfg["enabled_tiers"] = [t for t in ["A", "B", "C"] if t in {str(x).upper() for x in enabled}] or ["A"]
     cfg["strategy_profile"] = cfg.get("strategy_profile") or cfg.get("_id") or "adaptive_v1"
+    cfg["profile_rules"] = deepcopy(cfg.get("profile_rules") or DEFAULT_STRATEGY_CONFIG["profile_rules"])
     return cfg
+
+
+def classify_pick_profile(pick: Dict[str, Any]) -> Optional[str]:
+    side = str(pick.get("recommended_side") or "").upper()
+    favorite_or_dog = str(pick.get("favorite_or_dog") or "").lower().strip()
+    if favorite_or_dog not in {"favorite", "dog"}:
+        is_favorite_pick = pick.get("is_favorite_pick")
+        if is_favorite_pick is not None:
+            favorite_or_dog = "favorite" if bool(is_favorite_pick) else "dog"
+    if side == "HOME" and favorite_or_dog == "dog":
+        return "HOME_DOG"
+    if side == "HOME" and favorite_or_dog == "favorite":
+        return "HOME_FAVORITE"
+    if side == "AWAY" and favorite_or_dog == "dog":
+        return "AWAY_DOG"
+    if side == "AWAY" and favorite_or_dog == "favorite":
+        return "AWAY_FAVORITE"
+    return None
+
+
+def derive_base_tier(p_cover: Optional[float], thresholds: Dict[str, float]) -> Optional[str]:
+    if p_cover is None:
+        return None
+    if p_cover >= thresholds["tier_a"]:
+        return "A"
+    if p_cover >= thresholds["tier_b"]:
+        return "B"
+    if p_cover >= thresholds["tier_c"]:
+        return "C"
+    return None
+
+
+def get_profile_performance_metrics(profile: str, performance_metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    metrics = performance_metrics or {}
+    profile_metrics = metrics.get("profile_metrics") or {}
+    raw = profile_metrics.get(profile) or {}
+    return {
+        "mean_clv_rolling": _to_float(raw.get("mean_clv_rolling")),
+        "market_beating_rate_rolling": _to_float(raw.get("market_beating_rate_rolling")),
+        "n_clv_valid": int(raw.get("n_clv_valid") or 0),
+    }
 
 
 def _compute_drawdown_units(pnl_values: List[float]) -> Dict[str, float]:
@@ -167,10 +232,7 @@ def evaluate_strategy_state(
     ):
         triggers.append("drawdown_guard")
         active["max_picks_per_day"] = min(active["max_picks_per_day"], 1)
-
     if conservative:
-        active["min_p_cover"] = max(active["min_p_cover"], float(cfg["conservative_min_p_cover"]))
-        active["min_abs_model_edge"] = max(active["min_abs_model_edge"], float(cfg["conservative_min_abs_model_edge"]))
         active["max_picks_per_day"] = min(active["max_picks_per_day"], int(cfg["conservative_max_picks_per_day"]))
 
     return {
@@ -178,6 +240,7 @@ def evaluate_strategy_state(
         "strategy_mode": "conservative" if conservative or "drawdown_guard" in triggers else "normal",
         "active_strategy_thresholds": active,
         "dynamic_guardrails_triggered": triggers,
+        "legacy_tier_filter_enabled": False,
     }
 
 
@@ -189,6 +252,9 @@ def select_operational_picks(
     state = evaluate_strategy_state(strategy_config, performance_metrics)
     active = state["active_strategy_thresholds"]
     mode = state["strategy_mode"]
+    cfg = normalize_strategy_config(strategy_config)
+    profile_rules = cfg.get("profile_rules") or {}
+    tier_thresholds = {"tier_a": 0.58, "tier_b": 0.56, "tier_c": 0.54}
 
     pre_filter_counts = {"A": 0, "B": 0, "C": 0, "below_C": 0}
     post_filter_counts = {"A": 0, "B": 0, "C": 0}
@@ -202,6 +268,10 @@ def select_operational_picks(
         "other": 0,
         "outside_p_cover_range": 0,
         "below_strategy_model_edge": 0,
+        "profile_shadow_only": 0,
+        "rolling_profile_guard": 0,
+        "legacy_tier_filter": 0,
+        "duplicate_skipped": 0,
     }
 
     selected: List[Dict[str, Any]] = []
@@ -216,38 +286,92 @@ def select_operational_picks(
     for pick in sorted_candidates:
         p_cover = _to_float(pick.get("p_cover"))
         model_edge = abs(_to_float(pick.get("model_edge")) or 0.0)
-        in_p_cover_range = (
-            p_cover is not None
-            and p_cover >= active["min_p_cover"]
-            and p_cover < active["max_p_cover"]
-        )
-        in_edge_range = model_edge >= active["min_abs_model_edge"]
-        tier_candidate = "A" if in_p_cover_range and in_edge_range else None
-        if tier_candidate:
-            pre_filter_counts["A"] += 1
+        profile = classify_pick_profile(pick)
+        base_tier = derive_base_tier(p_cover, tier_thresholds)
+        if base_tier in pre_filter_counts:
+            pre_filter_counts[base_tier] += 1
         else:
             pre_filter_counts["below_C"] += 1
 
+        profile_rule = profile_rules.get(profile or "", {})
+        p_cover_operational_floor = _to_float(profile_rule.get("min_p_cover"))
+        edge_operational_floor = _to_float(profile_rule.get("min_abs_model_edge"))
+        allowed_tiers = {str(t).upper() for t in (profile_rule.get("operational_tiers") or [])}
+        profile_shadow_only = bool(profile_rule.get("shadow_only"))
+        is_mid_pcover_high_edge = (
+            p_cover is not None
+            and 0.54 <= p_cover < 0.58
+            and model_edge >= 8.0
+        )
+        in_p_cover_range = (
+            p_cover is not None
+            and p_cover_operational_floor is not None
+            and p_cover >= p_cover_operational_floor
+        )
+        in_edge_range = (
+            edge_operational_floor is not None
+            and model_edge >= edge_operational_floor
+        )
+        passes_global_edge_floor = model_edge >= 3.0
+        profile_metrics = get_profile_performance_metrics(profile or "", performance_metrics)
+
+        tier_candidate = base_tier
         strategy_exclusion_reason = None
-        passed_strategy_profile = tier_candidate == "A"
-        if not in_p_cover_range:
+        strategy_exclusion_layer = None
+        passed_strategy_profile = False
+        if not passes_global_edge_floor:
+            strategy_exclusion_reason = "below_strategy_model_edge"
+            strategy_exclusion_layer = "profile_rule"
+        elif is_mid_pcover_high_edge:
             strategy_exclusion_reason = "outside_p_cover_range"
+            strategy_exclusion_layer = "profile_rule"
+        elif profile_shadow_only:
+            strategy_exclusion_reason = "profile_shadow_only"
+            strategy_exclusion_layer = "profile_rule"
+        elif base_tier is None:
+            strategy_exclusion_reason = "outside_p_cover_range"
+            strategy_exclusion_layer = "profile_rule"
+        elif not allowed_tiers or base_tier not in allowed_tiers:
+            strategy_exclusion_reason = "tier_disabled"
+            strategy_exclusion_layer = "profile_rule"
+        elif not in_p_cover_range:
+            strategy_exclusion_reason = "outside_p_cover_range"
+            strategy_exclusion_layer = "profile_rule"
         elif not in_edge_range:
             strategy_exclusion_reason = "below_strategy_model_edge"
+            strategy_exclusion_layer = "profile_rule"
+        elif profile == "AWAY_DOG":
+            min_mbr = _to_float(profile_rule.get("min_market_beating_rate_rolling"))
+            min_mean_clv = _to_float(profile_rule.get("min_mean_clv_rolling"))
+            if (
+                profile_metrics["market_beating_rate_rolling"] is not None
+                and min_mbr is not None
+                and profile_metrics["market_beating_rate_rolling"] < min_mbr
+            ):
+                strategy_exclusion_reason = "rolling_profile_guard"
+                strategy_exclusion_layer = "rolling_profile_guard"
+            elif (
+                profile_metrics["mean_clv_rolling"] is not None
+                and min_mean_clv is not None
+                and profile_metrics["mean_clv_rolling"] < min_mean_clv
+            ):
+                strategy_exclusion_reason = "rolling_profile_guard"
+                strategy_exclusion_layer = "rolling_profile_guard"
         elif not pick.get("passed_confidence", True):
             strategy_exclusion_reason = "confidence_not_high"
+            strategy_exclusion_layer = "profile_rule"
         elif not pick.get("passed_blowout_filter", True):
             strategy_exclusion_reason = "blowout_filtered"
-
-        if strategy_exclusion_reason is None and "A" not in active["enabled_tiers"]:
-            strategy_exclusion_reason = "tier_disabled"
+            strategy_exclusion_layer = "profile_rule"
 
         day_key = _madrid_day_key(pick.get("commence_time")) or "unknown"
         if strategy_exclusion_reason is None:
+            passed_strategy_profile = True
             existing_day_count = int(pick.get("existing_day_count") or 0)
             current = day_counts.get(day_key, 0) + existing_day_count
             if current >= int(active["max_picks_per_day"]):
                 strategy_exclusion_reason = "max_picks_per_day_trim"
+                strategy_exclusion_layer = "max_picks_trim"
 
         if strategy_exclusion_reason is not None:
             drop_reasons_summary[strategy_exclusion_reason] = drop_reasons_summary.get(strategy_exclusion_reason, 0) + 1
@@ -255,15 +379,21 @@ def select_operational_picks(
             pick["tier"] = None
         else:
             pick["final_selected"] = True
-            pick["tier"] = "A"
+            pick["tier"] = base_tier
             selected.append(pick)
-            post_filter_counts["A"] += 1
+            post_filter_counts[base_tier] = post_filter_counts.get(base_tier, 0) + 1
             day_counts[day_key] = day_counts.get(day_key, 0) + 1
 
-        pick["tier_candidate"] = tier_candidate
+        pick["tier_candidate"] = base_tier
+        pick["selection_profile"] = profile
+        pick["profile_metrics_used"] = profile_metrics
         pick["passed_strategy_profile"] = passed_strategy_profile
         pick["strategy_exclusion_reason"] = strategy_exclusion_reason
+        pick["strategy_exclusion_layer"] = strategy_exclusion_layer
         pick["strategy_mode_used"] = mode
+        pick["final_decision"] = "dropped"
+        pick["final_decision_reason"] = strategy_exclusion_reason or "pending_finalization"
+        pick["final_decision_layer"] = strategy_exclusion_layer or ("profile_rule" if not pick.get("final_selected") else "strategy_engine")
         all_picks.append(pick)
 
     return {
