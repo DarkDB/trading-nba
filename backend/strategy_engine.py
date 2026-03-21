@@ -391,9 +391,14 @@ def select_operational_picks(
         pick["strategy_exclusion_reason"] = strategy_exclusion_reason
         pick["strategy_exclusion_layer"] = strategy_exclusion_layer
         pick["strategy_mode_used"] = mode
-        pick["final_decision"] = "dropped"
-        pick["final_decision_reason"] = strategy_exclusion_reason or "pending_finalization"
-        pick["final_decision_layer"] = strategy_exclusion_layer or ("profile_rule" if not pick.get("final_selected") else "strategy_engine")
+        if pick.get("final_selected"):
+            pick["final_decision"] = "candidate_selected"
+            pick["final_decision_reason"] = "strategy_selected"
+            pick["final_decision_layer"] = "strategy_engine"
+        else:
+            pick["final_decision"] = "dropped"
+            pick["final_decision_reason"] = strategy_exclusion_reason or "profile_rule_block"
+            pick["final_decision_layer"] = strategy_exclusion_layer or "profile_rule"
         all_picks.append(pick)
 
     return {

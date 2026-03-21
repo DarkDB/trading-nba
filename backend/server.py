@@ -632,7 +632,9 @@ async def capture_closing_lines_task(window_minutes: int = 120, limit: int = 500
     now_iso = now.isoformat()
 
     query = {
+        "archived": {"$ne": True},
         "result": None,
+        "final_decision": {"$ne": "dropped"},
         "book": "pinnacle",
         "close_spread": None,
         "commence_time": {"$gte": window_start.isoformat(), "$lte": cutoff.isoformat()},
@@ -768,8 +770,10 @@ async def collect_missing_closing_line_warnings(
     lookback_start = now - timedelta(days=max(1, int(lookback_days)))
 
     query = {
+        "archived": {"$ne": True},
         "book": "pinnacle",
         "result": None,
+        "final_decision": {"$ne": "dropped"},
         "close_spread": None,
         "commence_time": {"$gte": lookback_start.isoformat(), "$lte": alert_cutoff.isoformat()},
     }
@@ -1496,7 +1500,9 @@ async def capture_closing_lines_cron(
 async def diagnostics_closing_capture(user=Depends(get_current_user)):
     now = datetime.now(timezone.utc).isoformat()
     open_query = {
+        "archived": {"$ne": True},
         "result": None,
+        "final_decision": {"$ne": "dropped"},
         "book": "pinnacle",
         "commence_time": {"$gte": now},
     }
@@ -1844,7 +1850,7 @@ async def auto_grade_results(days_back: int = 3, user=Depends(get_current_user))
     
     # Find pending picks
     pending_picks = await db.predictions.find(
-        {"result": None},
+        {"archived": {"$ne": True}, "result": None, "final_decision": {"$ne": "dropped"}},
         {"_id": 0}
     ).to_list(500)
     
@@ -4005,6 +4011,7 @@ async def generate_picks(user=Depends(get_current_user)):
                 "recommended_side": pick["recommended_side"],
                 "open_spread": pick["open_spread"],
                 "result": None,
+                "final_decision": {"$ne": "dropped"},
                 "archived": {"$ne": True},
             },
             {"_id": 0, "user_id": 1, "id": 1},
@@ -4042,6 +4049,7 @@ async def generate_picks(user=Depends(get_current_user)):
                 "event_id": shadow["event_id"],
                 "is_shadow": True,
                 "result": None,
+                "final_decision": {"$ne": "dropped"},
                 "archived": {"$ne": True},
             },
             {"_id": 0, "id": 1},
@@ -4156,7 +4164,15 @@ async def generate_picks(user=Depends(get_current_user)):
 
 @api_router.get("/picks")
 async def get_picks(user=Depends(get_current_user)):
-    picks = await db.predictions.find({"user_id": user['id'], "archived": {"$ne": True}, "is_shadow": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    picks = await db.predictions.find(
+        {
+            "user_id": user['id'],
+            "archived": {"$ne": True},
+            "is_shadow": {"$ne": True},
+            "final_decision": {"$ne": "dropped"},
+        },
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(100)
     return {"picks": picks}
 
 @api_router.get("/picks/operative")
@@ -4167,12 +4183,18 @@ async def get_operative_picks(user=Depends(get_current_user)):
         "do_not_bet": False,
         "archived": {"$ne": True},
         "is_shadow": {"$ne": True},
+        "final_decision": {"$ne": "dropped"},
     }, {"_id": 0}).sort("commence_time", 1).to_list(50)
     return {"picks": picks, "count": len(picks)}
 
 @api_router.get("/history")
 async def get_history(signal: Optional[str] = None, covered: Optional[bool] = None, user=Depends(get_current_user)):
-    query = {"user_id": user['id'], "actual_margin": {"$ne": None}, "is_shadow": {"$ne": True}}
+    query = {
+        "user_id": user['id'],
+        "actual_margin": {"$ne": None},
+        "is_shadow": {"$ne": True},
+        "final_decision": {"$ne": "dropped"},
+    }
     if signal:
         query["signal"] = signal
     if covered is not None:
@@ -4204,7 +4226,10 @@ async def export_history(user=Depends(get_current_user)):
     import csv
     import io
     
-    predictions = await db.predictions.find({"user_id": user['id'], "is_shadow": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    predictions = await db.predictions.find(
+        {"user_id": user['id'], "is_shadow": {"$ne": True}, "final_decision": {"$ne": "dropped"}},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(1000)
     
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=[
